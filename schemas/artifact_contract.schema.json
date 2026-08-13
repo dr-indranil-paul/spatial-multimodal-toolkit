@@ -1,0 +1,77 @@
+{
+  "$defs": {
+    "ArtifactRole": {
+      "description": "Semantic role of an output artifact.",
+      "enum": [
+        "raw_counts",
+        "qc_metrics",
+        "pseudobulk_matrix",
+        "differential_results",
+        "spatial_ome_zarr",
+        "spatial_neighborhood_graph",
+        "html_report",
+        "pdf_report",
+        "ro_crate_metadata"
+      ],
+      "title": "ArtifactRole",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Artifact inventory contract for release bundle tracking.",
+  "properties": {
+    "artifact_id": {
+      "description": "Unique artifact identifier",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "role": {
+      "$ref": "#/$defs/ArtifactRole",
+      "description": "Semantic artifact role"
+    },
+    "relative_path": {
+      "description": "Path relative to run_<uuid> root",
+      "title": "Relative Path",
+      "type": "string"
+    },
+    "media_type": {
+      "description": "MIME or media format string (e.g. application/parquet, image/zarr)",
+      "title": "Media Type",
+      "type": "string"
+    },
+    "size_bytes": {
+      "description": "File size in bytes",
+      "minimum": 0,
+      "title": "Size Bytes",
+      "type": "integer"
+    },
+    "sha256": {
+      "description": "SHA-256 file checksum",
+      "pattern": "^[a-fA-F0-9]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "producing_stage": {
+      "description": "Pipeline stage that generated this file",
+      "title": "Producing Stage",
+      "type": "string"
+    },
+    "is_canonical": {
+      "default": true,
+      "description": "Flag indicating if produced by a canonical pipeline path",
+      "title": "Is Canonical",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "artifact_id",
+    "role",
+    "relative_path",
+    "media_type",
+    "size_bytes",
+    "sha256",
+    "producing_stage"
+  ],
+  "title": "ArtifactContract",
+  "type": "object"
+}

@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "ErrorCode": {
+      "description": "Machine-readable error codes for API and AI agent consumption.",
+      "enum": [
+        "INVALID_MANIFEST",
+        "FILE_NOT_FOUND",
+        "CHECKSUM_MISMATCH",
+        "INSUFFICIENT_BIOLOGICAL_REPLICATES",
+        "RESOURCE_ENVELOPE_EXCEEDED",
+        "PSEUDOBULK_AGGREGATION_FAILED",
+        "METHOD_FAILED_TERMINAL",
+        "SPATIAL_NULL_TEST_FAILED",
+        "UNAUTHORIZED_PATH"
+      ],
+      "title": "ErrorCode",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Machine-readable structured error contract for CLI and FastAPI responses.",
+  "properties": {
+    "error_code": {
+      "$ref": "#/$defs/ErrorCode",
+      "description": "Stable machine-readable error code"
+    },
+    "reason": {
+      "description": "High-level description of what went wrong",
+      "title": "Reason",
+      "type": "string"
+    },
+    "remediation_hint": {
+      "description": "Actionable advice on how to resolve the error",
+      "title": "Remediation Hint",
+      "type": "string"
+    },
+    "context": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Additional context parameters",
+      "title": "Context",
+      "type": "object"
+    }
+  },
+  "required": [
+    "error_code",
+    "reason",
+    "remediation_hint"
+  ],
+  "title": "StructuredErrorResponse",
+  "type": "object"
+}

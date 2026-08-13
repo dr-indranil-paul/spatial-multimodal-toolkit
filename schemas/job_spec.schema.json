@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "ResourceEnvelope": {
+      "additionalProperties": false,
+      "description": "Runtime resource limits compliant with HPC QOS policies (cpus <= 32).",
+      "properties": {
+        "cpus": {
+          "default": 8,
+          "description": "CPU cores requested (HPC max 32)",
+          "maximum": 32,
+          "minimum": 1,
+          "title": "Cpus",
+          "type": "integer"
+        },
+        "memory_gb": {
+          "default": 32.0,
+          "description": "Memory requested in GB",
+          "maximum": 256.0,
+          "minimum": 1.0,
+          "title": "Memory Gb",
+          "type": "number"
+        },
+        "time_limit_hours": {
+          "default": 12.0,
+          "description": "Walltime limit in hours",
+          "maximum": 72.0,
+          "minimum": 0.5,
+          "title": "Time Limit Hours",
+          "type": "number"
+        },
+        "use_gpu": {
+          "default": false,
+          "description": "GPU requirement flag",
+          "title": "Use Gpu",
+          "type": "boolean"
+        }
+      },
+      "title": "ResourceEnvelope",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Job specification contract for pipeline submission.",
+  "properties": {
+    "job_id": {
+      "description": "Unique job UUID",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "owner": {
+      "description": "User or agent owner ID",
+      "title": "Owner",
+      "type": "string"
+    },
+    "study_id": {
+      "description": "Associated study ID",
+      "title": "Study Id",
+      "type": "string"
+    },
+    "manifest_path": {
+      "description": "Path to validated intake_manifest.json",
+      "title": "Manifest Path",
+      "type": "string"
+    },
+    "plugin_name": {
+      "description": "Target plugin (e.g. scrna, visium, xenium)",
+      "title": "Plugin Name",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/ResourceEnvelope",
+      "description": "Runtime resource limits"
+    },
+    "allow_fallback": {
+      "default": true,
+      "description": "Allow non-canonical qualified fallback methods on primary failure",
+      "title": "Allow Fallback",
+      "type": "boolean"
+    },
+    "parameters": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Resolved scientific parameters",
+      "title": "Parameters",
+      "type": "object"
+    },
+    "output_dir": {
+      "description": "Output directory path beneath /home/groups/EmiliLab/pauli/",
+      "title": "Output Dir",
+      "type": "string"
+    }
+  },
+  "required": [
+    "job_id",
+    "owner",
+    "study_id",
+    "manifest_path",
+    "plugin_name",
+    "output_dir"
+  ],
+  "title": "JobSpec",
+  "type": "object"
+}

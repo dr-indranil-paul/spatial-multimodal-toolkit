@@ -1,0 +1,226 @@
+{
+  "$defs": {
+    "BiologicalSpecimen": {
+      "additionalProperties": false,
+      "description": "Biological specimen hierarchy unit representing an independent biological replicate (n=1).",
+      "properties": {
+        "biological_unit_id": {
+          "description": "Unique independent biological unit ID (e.g. Patient ID, Core ID)",
+          "title": "Biological Unit Id",
+          "type": "string"
+        },
+        "specimen_id": {
+          "description": "Unique specimen identifier (e.g. Tissue Section ID)",
+          "title": "Specimen Id",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Experimental condition or disease phenotype",
+          "title": "Condition",
+          "type": "string"
+        },
+        "batch_or_block": {
+          "default": "batch_1",
+          "description": "Batch, block, or run cohort identifier",
+          "title": "Batch Or Block",
+          "type": "string"
+        },
+        "organism": {
+          "default": "Homo sapiens",
+          "description": "Taxonomic species",
+          "title": "Organism",
+          "type": "string"
+        },
+        "tissue_source": {
+          "description": "Anatomical tissue origin",
+          "title": "Tissue Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "biological_unit_id",
+        "specimen_id",
+        "condition",
+        "tissue_source"
+      ],
+      "title": "BiologicalSpecimen",
+      "type": "object"
+    },
+    "FeatureType": {
+      "description": "Channel-agnostic feature modalities.",
+      "enum": [
+        "rna",
+        "protein",
+        "antibody_control",
+        "morphology",
+        "genomic_variant"
+      ],
+      "title": "FeatureType",
+      "type": "string"
+    },
+    "InputFileSpec": {
+      "additionalProperties": false,
+      "description": "Input file specification with SHA-256 validation.",
+      "properties": {
+        "file_id": {
+          "description": "Logical file identifier",
+          "title": "File Id",
+          "type": "string"
+        },
+        "relative_path": {
+          "description": "Path relative to manifest directory",
+          "title": "Relative Path",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "HEX SHA-256 digest",
+          "pattern": "^[a-fA-F0-9]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "file_type": {
+          "description": "File format (e.g. h5ad, zarr, raw_matrix_dir)",
+          "title": "File Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_id",
+        "relative_path",
+        "sha256",
+        "file_type"
+      ],
+      "title": "InputFileSpec",
+      "type": "object"
+    },
+    "IntakeClass": {
+      "description": "Dataset Intake Classifier (Classes A-G) per Institute Analytics Manual.",
+      "enum": [
+        "A_native_raw",
+        "B_processed_native",
+        "C_analysis_object",
+        "D_count_matrix_only",
+        "E_image_coordinates_only",
+        "F_summary_only",
+        "G_unresolved_quarantine"
+      ],
+      "title": "IntakeClass",
+      "type": "string"
+    },
+    "Modality": {
+      "description": "Assay platform modalities.",
+      "enum": [
+        "scrna",
+        "snrna",
+        "visium",
+        "xenium",
+        "spatial_proteomics"
+      ],
+      "title": "Modality",
+      "type": "string"
+    },
+    "ModalityLinkage": {
+      "description": "Physical modality linkage classification per Institute Analytics Manual.",
+      "enum": [
+        "same_molecule",
+        "same_cell_or_nucleus",
+        "same_spot_or_pixel",
+        "same_section",
+        "serial_section",
+        "same_specimen",
+        "same_donor",
+        "condition_matched",
+        "external_reference"
+      ],
+      "title": "ModalityLinkage",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Comprehensive intake manifest contract for spatial and single-cell deliveries.",
+  "properties": {
+    "study_id": {
+      "description": "Unique study or grant identifier",
+      "title": "Study Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "0.1.0",
+      "description": "Contract schema version",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "modality": {
+      "$ref": "#/$defs/Modality",
+      "description": "Platform assay modality"
+    },
+    "intake_class": {
+      "$ref": "#/$defs/IntakeClass",
+      "default": "B_processed_native",
+      "description": "Dataset intake class (A-G)"
+    },
+    "modality_linkage": {
+      "$ref": "#/$defs/ModalityLinkage",
+      "default": "same_cell_or_nucleus",
+      "description": "Physical modality linkage classification"
+    },
+    "specimens": {
+      "description": "List of biological specimens",
+      "items": {
+        "$ref": "#/$defs/BiologicalSpecimen"
+      },
+      "minItems": 1,
+      "title": "Specimens",
+      "type": "array"
+    },
+    "input_files": {
+      "description": "List of verified input files",
+      "items": {
+        "$ref": "#/$defs/InputFileSpec"
+      },
+      "minItems": 1,
+      "title": "Input Files",
+      "type": "array"
+    },
+    "feature_types": {
+      "default": [
+        "rna"
+      ],
+      "description": "Active feature channels",
+      "items": {
+        "$ref": "#/$defs/FeatureType"
+      },
+      "title": "Feature Types",
+      "type": "array"
+    },
+    "reference_genome": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": "GRCh38",
+      "description": "Reference genome build",
+      "title": "Reference Genome"
+    },
+    "metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Additional key-value metadata",
+      "title": "Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "study_id",
+    "modality",
+    "specimens",
+    "input_files"
+  ],
+  "title": "IntakeManifest",
+  "type": "object"
+}

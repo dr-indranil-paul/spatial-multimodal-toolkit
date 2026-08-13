@@ -1,0 +1,60 @@
+{
+  "study_id": "PREVAIL_BARRETTS_ESOPHAGUS",
+  "schema_version": "0.1.0",
+  "modality": "spatial_proteomics",
+  "intake_class": "B_processed_native",
+  "modality_linkage": "same_section",
+  "specimens": [
+    {
+      "biological_unit_id": "PREVAIL_PATIENT_001",
+      "specimen_id": "hBE-TMA1-1_CORE_A1",
+      "condition": "Progressor",
+      "batch_or_block": "TMA1",
+      "organism": "Homo sapiens",
+      "tissue_source": "Esophagus"
+    },
+    {
+      "biological_unit_id": "PREVAIL_PATIENT_002",
+      "specimen_id": "hBE-TMA1-1_CORE_A2",
+      "condition": "Progressor",
+      "batch_or_block": "TMA1",
+      "organism": "Homo sapiens",
+      "tissue_source": "Esophagus"
+    },
+    {
+      "biological_unit_id": "PREVAIL_PATIENT_003",
+      "specimen_id": "hBE-TMA1-1_CORE_B1",
+      "condition": "Non_progressor",
+      "batch_or_block": "TMA1",
+      "organism": "Homo sapiens",
+      "tissue_source": "Esophagus"
+    },
+    {
+      "biological_unit_id": "PREVAIL_PATIENT_004",
+      "specimen_id": "hBE-TMA1-1_CORE_B2",
+      "condition": "Non_progressor",
+      "batch_or_block": "TMA1",
+      "organism": "Homo sapiens",
+      "tissue_source": "Esophagus"
+    }
+  ],
+  "input_files": [
+    {
+      "file_id": "cycif_tma1_ome_tiff",
+      "relative_path": "02_data_sources/04_collaborators/from_koei/01_mxcycif/tma1_1.ome.tiff",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "file_type": "ome_tiff"
+    }
+  ],
+  "feature_types": [
+    "protein",
+    "morphology",
+    "antibody_control"
+  ],
+  "reference_genome": "GRCh38",
+  "metadata": {
+    "project": "PREVAIL",
+    "disease": "Barretts Esophagus Risk Stratification",
+    "modality_channels": "cycIF 25 markers + Visium HD + H&E + BODIPY"
+  }
+}
