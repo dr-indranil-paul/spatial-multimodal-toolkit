@@ -129,7 +129,12 @@ def step07_classify_cells(
     cell_type[is_endothelial & ~is_epithelial & ~is_immune] = "Endothelial"
     cell_type[is_stromal & ~is_epithelial & ~is_immune & ~is_endothelial] = "Stromal"
     cell_type[
-        is_prolif & ~is_epithelial & ~is_immune & ~is_endothelial & ~is_stromal & ~is_meso
+        is_prolif
+        & ~is_epithelial
+        & ~is_immune
+        & ~is_endothelial
+        & ~is_stromal
+        & ~is_meso
     ] = "Proliferating"
 
     labels = pd.DataFrame(
@@ -151,13 +156,19 @@ def step07_classify_cells(
     out = pd.concat([z, labels], axis=1)
 
     if verbose:
-        print(f"Classified {n:,} cells across {df[core_col].nunique()} cores "
-              f"(z_threshold={config.z_threshold}, z_high_threshold={config.z_high_threshold})")
+        print(
+            f"Classified {n:,} cells across {df[core_col].nunique()} cores "
+            f"(z_threshold={config.z_threshold}, z_high_threshold={config.z_high_threshold})"
+        )
         for name, arr in [
-            ("is_epithelial", is_epithelial), ("is_hybrid", is_hybrid),
-            ("is_mesenchymal", is_meso), ("is_immune", is_immune),
-            ("is_myeloid", is_myeloid), ("is_stromal", is_stromal),
-            ("is_endothelial", is_endothelial), ("is_proliferating", is_prolif),
+            ("is_epithelial", is_epithelial),
+            ("is_hybrid", is_hybrid),
+            ("is_mesenchymal", is_meso),
+            ("is_immune", is_immune),
+            ("is_myeloid", is_myeloid),
+            ("is_stromal", is_stromal),
+            ("is_endothelial", is_endothelial),
+            ("is_proliferating", is_prolif),
         ]:
             print(f"  {name:22s}: {arr.mean() * 100:5.1f}%")
         print("  cell_type distribution:")
@@ -170,7 +181,9 @@ def step07_classify_cells(
         out_dir = ensure_dir(output_dir)
 
         composition = (
-            out.groupby(core_col)["cell_type"].value_counts(normalize=True).unstack(fill_value=0.0)
+            out.groupby(core_col)["cell_type"]
+            .value_counts(normalize=True)
+            .unstack(fill_value=0.0)
         )
         fig, ax = plt.subplots(figsize=(max(5, 0.5 * len(composition)), 5))
         composition.plot(kind="bar", stacked=True, ax=ax, width=0.85)
@@ -183,8 +196,15 @@ def step07_classify_cells(
         fig, ax = plt.subplots(figsize=(6, 6))
         for t in sorted(out["cell_type"].unique()):
             m = out["cell_type"] == t
-            ax.scatter(epi_max[m.to_numpy()], np.maximum.reduce([zcol(x) for x in config.mesenchymal_markers])[m.to_numpy()],
-                       s=3, alpha=0.4, label=t)
+            ax.scatter(
+                epi_max[m.to_numpy()],
+                np.maximum.reduce([zcol(x) for x in config.mesenchymal_markers])[
+                    m.to_numpy()
+                ],
+                s=3,
+                alpha=0.4,
+                label=t,
+            )
         ax.axvline(config.z_threshold, color="gray", linestyle="--", linewidth=0.8)
         ax.axhline(config.z_threshold, color="gray", linestyle="--", linewidth=0.8)
         ax.set_xlabel("max epithelial-marker z-score")
@@ -228,7 +248,11 @@ def step08_score_programs(
     out = df.copy()
     prog_cols = []
     for prog in programs:
-        missing = [f"{m}{z_suffix}" for m in prog.marker_columns if f"{m}{z_suffix}" not in out.columns]
+        missing = [
+            f"{m}{z_suffix}"
+            for m in prog.marker_columns
+            if f"{m}{z_suffix}" not in out.columns
+        ]
         if missing:
             raise ValueError(
                 f"Program {prog.name!r} references z-score columns not present in df: {missing}. "
@@ -265,12 +289,16 @@ def step08_score_programs(
         import matplotlib.pyplot as plt
 
         out_dir = ensure_dir(output_dir)
-        fig, axes = plt.subplots(1, len(prog_cols) + 1, figsize=(4 * (len(prog_cols) + 1), 4))
+        fig, axes = plt.subplots(
+            1, len(prog_cols) + 1, figsize=(4 * (len(prog_cols) + 1), 4)
+        )
         for ax, col in zip(axes[:-1], prog_cols):
             ax.hist(out[col].to_numpy(), bins=60, color="steelblue")
             ax.set_title(col)
             ax.set_xlabel("score")
-        out["dominant_program"].value_counts().reindex(prog_names).plot(kind="bar", ax=axes[-1], color="darkorange")
+        out["dominant_program"].value_counts().reindex(prog_names).plot(
+            kind="bar", ax=axes[-1], color="darkorange"
+        )
         axes[-1].set_title("dominant_program")
         fig.suptitle("step08: per-cell program score distributions")
         fig.tight_layout()

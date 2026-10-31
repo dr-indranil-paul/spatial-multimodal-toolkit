@@ -82,6 +82,7 @@ PathLike = Union[str, Path]
 # Provenance record
 # ---------------------------------------------------------------------------
 
+
 def save_scene_metadata(
     result: Dict,
     scene_label: str,
@@ -108,6 +109,7 @@ def save_scene_metadata(
     Returns:
         Absolute path to the written JSON file.
     """
+
     def _ver(name: str) -> str:
         try:
             m = __import__(name)
@@ -171,6 +173,7 @@ def save_scene_metadata(
 # Composite OME-TIFF
 # ---------------------------------------------------------------------------
 
+
 def build_composite_ometiff(
     result: Dict,
     output_path: PathLike,
@@ -207,7 +210,9 @@ def build_composite_ometiff(
     for rnd in result["round_order"]:
         rd = result["rounds"][rnd]
         if rd.get("channels") is None:
-            logger.warning(f"  {rnd}: no data (registration failed) — excluded from composite")
+            logger.warning(
+                f"  {rnd}: no data (registration failed) — excluded from composite"
+            )
             continue
         n_ch = rd["channels"].shape[0]
         markers = marker_map.get(rnd, [f"Ch{c}" for c in range(n_ch)])
@@ -217,7 +222,9 @@ def build_composite_ometiff(
             channel_names.append(f"{rnd}_{marker}")
 
     if not channels:
-        raise ValueError("No registered channels available — cannot build composite OME-TIFF.")
+        raise ValueError(
+            "No registered channels available — cannot build composite OME-TIFF."
+        )
 
     stack = np.stack(channels, axis=0).astype(np.uint16)  # (C, Y, X)
 
@@ -228,7 +235,9 @@ def build_composite_ometiff(
         metadata["PhysicalSizeY"] = ps
         metadata["PhysicalSizeYUnit"] = "µm"
     else:
-        logger.warning("  No pixel size available — OME-TIFF will lack spatial calibration")
+        logger.warning(
+            "  No pixel size available — OME-TIFF will lack spatial calibration"
+        )
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -240,14 +249,17 @@ def build_composite_ometiff(
         compression="zlib",
     )
 
-    size_gb = os.path.getsize(str(output_path)) / 1024 ** 3
-    logger.info(f"  Composite: {output_path.name}  ({stack.shape[0]} ch, {size_gb:.2f} GB)")
+    size_gb = os.path.getsize(str(output_path)) / 1024**3
+    logger.info(
+        f"  Composite: {output_path.name}  ({stack.shape[0]} ch, {size_gb:.2f} GB)"
+    )
     return channel_names
 
 
 # ---------------------------------------------------------------------------
 # PIPEX single-channel TIFFs
 # ---------------------------------------------------------------------------
+
 
 def extract_pipex_channels(
     result: Dict,
@@ -292,7 +304,7 @@ def extract_pipex_channels(
                 tifffile.imwrite(str(p), rd["channels"][c].astype(np.uint16))
                 written.append(str(p))
 
-    total_mb = sum(os.path.getsize(p) for p in written) / 1024 ** 2
+    total_mb = sum(os.path.getsize(p) for p in written) / 1024**2
     logger.info(f"  PIPEX: {len(written)} TIFFs -> {output_dir}  ({total_mb:.0f} MB)")
     return written
 
@@ -300,6 +312,7 @@ def extract_pipex_channels(
 # ---------------------------------------------------------------------------
 # Border masks
 # ---------------------------------------------------------------------------
+
 
 def save_border_masks(
     result: Dict,
@@ -380,6 +393,7 @@ def save_border_masks(
 # QC display helpers (return DataFrames / figures for notebook display)
 # ---------------------------------------------------------------------------
 
+
 def qc_summary_table(result: Dict) -> "pd.DataFrame":
     """Return a DataFrame summarizing per-round registration quality.
 
@@ -395,10 +409,15 @@ def qc_summary_table(result: Dict) -> "pd.DataFrame":
         if rd["status"] == "reference":
             rows.append(
                 {
-                    "Round": rnd, "Status": "REFERENCE",
-                    "Inliers": "—", "Matches": "—", "Rate": "—",
-                    "Angle (deg)": "—", "Scale": "—",
-                    "Shift X (px)": "—", "Shift Y (px)": "—",
+                    "Round": rnd,
+                    "Status": "REFERENCE",
+                    "Inliers": "—",
+                    "Matches": "—",
+                    "Rate": "—",
+                    "Angle (deg)": "—",
+                    "Scale": "—",
+                    "Shift X (px)": "—",
+                    "Shift Y (px)": "—",
                 }
             )
         elif rd["registered"] and T is not None:
@@ -407,8 +426,10 @@ def qc_summary_table(result: Dict) -> "pd.DataFrame":
             rate = 100.0 * rd["inliers"] / rd["matches"] if rd["matches"] else 0
             rows.append(
                 {
-                    "Round": rnd, "Status": "OK",
-                    "Inliers": rd["inliers"], "Matches": rd["matches"],
+                    "Round": rnd,
+                    "Status": "OK",
+                    "Inliers": rd["inliers"],
+                    "Matches": rd["matches"],
                     "Rate": f"{rate:.1f}%",
                     "Angle (deg)": f"{angle:+.2f}",
                     "Scale": f"{scale:.4f}",
@@ -419,10 +440,15 @@ def qc_summary_table(result: Dict) -> "pd.DataFrame":
         else:
             rows.append(
                 {
-                    "Round": rnd, "Status": f'FAILED: {rd["status"]}',
-                    "Inliers": rd["inliers"], "Matches": rd["matches"], "Rate": "—",
-                    "Angle (deg)": "—", "Scale": "—",
-                    "Shift X (px)": "—", "Shift Y (px)": "—",
+                    "Round": rnd,
+                    "Status": f'FAILED: {rd["status"]}',
+                    "Inliers": rd["inliers"],
+                    "Matches": rd["matches"],
+                    "Rate": "—",
+                    "Angle (deg)": "—",
+                    "Scale": "—",
+                    "Shift X (px)": "—",
+                    "Shift Y (px)": "—",
                 }
             )
 
@@ -530,7 +556,9 @@ def plot_dapi_qc(
 
     if save_dir:
         Path(save_dir).mkdir(parents=True, exist_ok=True)
-        fig.savefig(Path(save_dir) / f"{scene_label}_dapi_qc.png", dpi=150, bbox_inches="tight")
+        fig.savefig(
+            Path(save_dir) / f"{scene_label}_dapi_qc.png", dpi=150, bbox_inches="tight"
+        )
         logger.info(f"  QC plot: {scene_label}_dapi_qc.png")
 
     return fig
@@ -539,6 +567,7 @@ def plot_dapi_qc(
 # ---------------------------------------------------------------------------
 # step04 orchestrator
 # ---------------------------------------------------------------------------
+
 
 def step04_export_registered(
     result: Dict,
@@ -628,7 +657,9 @@ def step04_export_registered(
     scene_dir = output_dir / scene_label
     scene_dir.mkdir(parents=True, exist_ok=True)
 
-    composite_path = output_dir / naming.composite_filename_template.format(scene_label=scene_label)
+    composite_path = output_dir / naming.composite_filename_template.format(
+        scene_label=scene_label
+    )
     channel_names = build_composite_ometiff(
         result, composite_path, marker_map, pixel_size_um=pixel_size_um
     )
@@ -670,7 +701,9 @@ def step04_export_registered(
 
     qc_plot_path: Optional[str] = None
     if write_qc_plot:
-        fig = plot_dapi_qc(result, scene_label, save_dir=scene_dir, downsample=qc_plot_downsample)
+        fig = plot_dapi_qc(
+            result, scene_label, save_dir=scene_dir, downsample=qc_plot_downsample
+        )
         if fig is not None:
             qc_plot_path = str(scene_dir / f"{scene_label}_dapi_qc.png")
             import matplotlib.pyplot as plt

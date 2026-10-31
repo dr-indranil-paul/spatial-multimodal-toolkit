@@ -75,8 +75,18 @@ logger = logging.getLogger("spatial_omics_toolkit.cycif.intake")
 OME_NS = {"ome": "http://www.openmicroscopy.org/Schemas/OME/2016-06"}
 """Standard OME-XML namespace URI — not a naming convention, kept as a constant."""
 
-_PALETTE = ("#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706",
-            "#dc2626", "#64748b", "#db2777", "#65a30d", "#0d9488")
+_PALETTE = (
+    "#2563eb",
+    "#7c3aed",
+    "#0891b2",
+    "#059669",
+    "#d97706",
+    "#dc2626",
+    "#64748b",
+    "#db2777",
+    "#65a30d",
+    "#0d9488",
+)
 """Fixed color palette cycled deterministically per *observed* slide/round,
 replacing the source's dict keyed by literal hBE-TMA slide identifiers."""
 
@@ -86,6 +96,7 @@ _FILENAME_GROUPS = ("round", "markers", "slide", "date", "acq_id", "scene")
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Filename parsing
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def parse_intake_filename(
     filename: str,
@@ -153,6 +164,7 @@ def _round_color(round_label: str, all_rounds: Sequence[str]) -> str:
 # 2. Raw file inventory
 # ═══════════════════════════════════════════════════════════════════════════
 
+
 def scan_raw_images(raw_dir: str, extension: str = ".czi") -> pd.DataFrame:
     """Scan a directory of per-slide subdirectories for raw image files.
 
@@ -179,12 +191,14 @@ def scan_raw_images(raw_dir: str, extension: str = ".czi") -> pd.DataFrame:
     records = []
     for sd in slide_dirs:
         for f in sorted(sd.glob(f"*{extension}")):
-            records.append({
-                "slide": sd.name,
-                "fname": f.name,
-                "path": str(f),
-                "size_gb": round(f.stat().st_size / 1024**3, 4),
-            })
+            records.append(
+                {
+                    "slide": sd.name,
+                    "fname": f.name,
+                    "path": str(f),
+                    "size_gb": round(f.stat().st_size / 1024**3, 4),
+                }
+            )
 
     df = pd.DataFrame(records, columns=["slide", "fname", "path", "size_gb"])
     total_gb = df["size_gb"].sum() if len(df) else 0.0
@@ -217,11 +231,27 @@ def parse_filenames(
     for _, row in df_files.iterrows():
         p = parse_intake_filename(row["fname"], pattern=pattern)
         if p:
-            parsed.append({**p, "slide": row["slide"], "path": row["path"], "size_gb": row["size_gb"]})
+            parsed.append(
+                {
+                    **p,
+                    "slide": row["slide"],
+                    "path": row["path"],
+                    "size_gb": row["size_gb"],
+                }
+            )
         else:
             unparsed.append(row["fname"])
 
-    columns = ["round", "markers", "slide", "date", "acq_id", "scene", "path", "size_gb"]
+    columns = [
+        "round",
+        "markers",
+        "slide",
+        "date",
+        "acq_id",
+        "scene",
+        "path",
+        "size_gb",
+    ]
     df_parsed = pd.DataFrame(parsed, columns=columns)
     logger.info(f"Parsed OK: {len(df_parsed)} / {len(df_files)}")
     if unparsed:
@@ -258,8 +288,11 @@ def check_round_scene_coverage(
         return pd.DataFrame(), []
 
     pivot = df_parsed.pivot_table(
-        index="round", columns="scene", values="size_gb",
-        aggfunc="count", fill_value=0,
+        index="round",
+        columns="scene",
+        values="size_gb",
+        aggfunc="count",
+        fill_value=0,
     )
 
     missing: List[Dict[str, str]] = []
@@ -279,6 +312,7 @@ def check_round_scene_coverage(
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. OME-XML sidecar metadata
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _parse_ome_xml(xml_path: str):
     """Parse channel names, pixel size, and dimensions from an OME-XML sidecar.
@@ -312,7 +346,9 @@ def _parse_ome_xml(xml_path: str):
         return None, None, str(e)
 
 
-def parse_ome_sidecars(slide_dirs: Sequence[Path], xml_suffix: str = ".ome.xml") -> List[Dict[str, Any]]:
+def parse_ome_sidecars(
+    slide_dirs: Sequence[Path], xml_suffix: str = ".ome.xml"
+) -> List[Dict[str, Any]]:
     """Parse every OME-XML sidecar across a set of slide directories.
 
     Ported from ``cycif_qc.py::parse_ome_sidecars``, generalized:
@@ -326,14 +362,16 @@ def parse_ome_sidecars(slide_dirs: Sequence[Path], xml_suffix: str = ".ome.xml")
         sd = Path(sd)
         for xml_path in sorted(sd.glob(f"*{xml_suffix}")):
             ch_names, px_size, dims = _parse_ome_xml(str(xml_path))
-            records.append({
-                "slide": sd.name,
-                "xml_file": xml_path.name,
-                "channels": ch_names,
-                "n_channels": len(ch_names) if ch_names else 0,
-                "pixel_size_um": px_size,
-                "dims": dims,
-            })
+            records.append(
+                {
+                    "slide": sd.name,
+                    "xml_file": xml_path.name,
+                    "channels": ch_names,
+                    "n_channels": len(ch_names) if ch_names else 0,
+                    "pixel_size_um": px_size,
+                    "dims": dims,
+                }
+            )
     logger.info(f"OME-XML sidecars parsed: {len(records)}")
     return records
 
@@ -377,10 +415,15 @@ def check_pixel_sizes(
         DataFrame with columns ``slide``, ``xml``, ``pixel_size_um``
         (plus ``within_bounds`` if ``bounds_um`` is given).
     """
-    records = [{
-        "slide": r["slide"], "xml": r["xml_file"],
-        "pixel_size_um": r["pixel_size_um"],
-    } for r in xml_records if r["pixel_size_um"] is not None]
+    records = [
+        {
+            "slide": r["slide"],
+            "xml": r["xml_file"],
+            "pixel_size_um": r["pixel_size_um"],
+        }
+        for r in xml_records
+        if r["pixel_size_um"] is not None
+    ]
     df = pd.DataFrame(records, columns=["slide", "xml", "pixel_size_um"])
     if bounds_um is not None and len(df):
         lo, hi = bounds_um
@@ -398,20 +441,25 @@ def check_dimensions(xml_records: List[Dict[str, Any]]) -> pd.DataFrame:
     for r in xml_records:
         d = r["dims"]
         if d and isinstance(d, dict):
-            records.append({
-                "slide": r["slide"],
-                "file": r["xml_file"],
-                "Width": int(d.get("SizeX") or 0),
-                "Height": int(d.get("SizeY") or 0),
-                "Channels": int(d.get("SizeC") or 0),
-                "Z-slices": int(d.get("SizeZ") or 0),
-            })
-    return pd.DataFrame(records, columns=["slide", "file", "Width", "Height", "Channels", "Z-slices"])
+            records.append(
+                {
+                    "slide": r["slide"],
+                    "file": r["xml_file"],
+                    "Width": int(d.get("SizeX") or 0),
+                    "Height": int(d.get("SizeY") or 0),
+                    "Channels": int(d.get("SizeC") or 0),
+                    "Z-slices": int(d.get("SizeZ") or 0),
+                }
+            )
+    return pd.DataFrame(
+        records, columns=["slide", "file", "Width", "Height", "Channels", "Z-slices"]
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. Structured checks report
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def build_intake_report(
     df_files: pd.DataFrame,
@@ -439,44 +487,76 @@ def build_intake_report(
     slides = sorted(df_files["slide"].unique()) if len(df_files) else []
 
     if config.expected_files_per_slide is None:
-        checks.append({
-            "Check": "Per-slide file count", "Status": "—",
-            "Detail": "expected_files_per_slide not specified — check skipped",
-        })
+        checks.append(
+            {
+                "Check": "Per-slide file count",
+                "Status": "—",
+                "Detail": "expected_files_per_slide not specified — check skipped",
+            }
+        )
     else:
         for slide, exp in config.expected_files_per_slide.items():
             act = actual_counts.get(slide, 0)
             status = "✓" if act == exp else "⚠"
-            checks.append({"Check": f"{slide} file count", "Status": status, "Detail": f"{act} / {exp}"})
+            checks.append(
+                {
+                    "Check": f"{slide} file count",
+                    "Status": status,
+                    "Detail": f"{act} / {exp}",
+                }
+            )
 
     status = "✓" if len(unparsed) == 0 else "⚠"
-    checks.append({"Check": "Filename parsing", "Status": status,
-                    "Detail": f"{len(df_parsed)}/{len(df_files)} OK"})
+    checks.append(
+        {
+            "Check": "Filename parsing",
+            "Status": status,
+            "Detail": f"{len(df_parsed)}/{len(df_files)} OK",
+        }
+    )
 
     bad_ch = sum(1 for r in xml_records if r["n_channels"] != config.expected_channels)
     status = "✓" if bad_ch == 0 else "⚠"
-    checks.append({"Check": f"Channel count ({config.expected_channels}/{config.expected_channels})",
-                    "Status": status, "Detail": f"{bad_ch} mismatch(es)"})
+    checks.append(
+        {
+            "Check": f"Channel count ({config.expected_channels}/{config.expected_channels})",
+            "Status": status,
+            "Detail": f"{bad_ch} mismatch(es)",
+        }
+    )
 
     bad_px = 0
     if len(px_df) > 0:
         unique_px = px_df.groupby("slide")["pixel_size_um"].apply(lambda x: x.unique())
         bad_px = sum(1 for v in unique_px if len(v) > 1)
     status = "✓" if bad_px == 0 else "⚠"
-    checks.append({"Check": "Pixel size consistent per slide", "Status": status,
-                    "Detail": f"{bad_px} slide(s) with multiple values"})
+    checks.append(
+        {
+            "Check": "Pixel size consistent per slide",
+            "Status": status,
+            "Detail": f"{bad_px} slide(s) with multiple values",
+        }
+    )
 
     if config.pixel_size_bounds_um is not None and "within_bounds" in px_df.columns:
         bad_bounds = int((~px_df["within_bounds"]).sum())
         status = "✓" if bad_bounds == 0 else "⚠"
-        checks.append({
-            "Check": f"Pixel size within {config.pixel_size_bounds_um} µm",
-            "Status": status, "Detail": f"{bad_bounds} file(s) out of bounds",
-        })
+        checks.append(
+            {
+                "Check": f"Pixel size within {config.pixel_size_bounds_um} µm",
+                "Status": status,
+                "Detail": f"{bad_bounds} file(s) out of bounds",
+            }
+        )
 
     status = "✓" if len(missing) == 0 else "⚠"
-    checks.append({"Check": f"All {len(config.expected_rounds)} expected rounds present",
-                    "Status": status, "Detail": f"{len(missing)} missing"})
+    checks.append(
+        {
+            "Check": f"All {len(config.expected_rounds)} expected rounds present",
+            "Status": status,
+            "Detail": f"{len(missing)} missing",
+        }
+    )
 
     return pd.DataFrame(checks, columns=["Check", "Status", "Detail"])
 
@@ -484,6 +564,7 @@ def build_intake_report(
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. Locating sample files (for preview)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def find_sample_raw_file(
     df_parsed: pd.DataFrame,
@@ -507,7 +588,9 @@ def find_sample_raw_file(
         return None
 
     match = df_parsed[
-        (df_parsed["slide"] == slide) & (df_parsed["scene"] == scene) & (df_parsed["round"] == round_label)
+        (df_parsed["slide"] == slide)
+        & (df_parsed["scene"] == scene)
+        & (df_parsed["round"] == round_label)
     ]
     if len(match) == 0:
         return None
@@ -574,6 +657,7 @@ def _mm_figsize(width_mm: float, height_mm: float) -> Tuple[float, float]:
 def _fig_to_png(fig, out_path: Path) -> str:
     fig.savefig(out_path, format="png", dpi=150)
     import matplotlib.pyplot as plt
+
     plt.close(fig)
     return str(out_path)
 
@@ -587,11 +671,18 @@ def plot_size_distribution(df_files: pd.DataFrame, out_path: Path) -> str:
     slides = sorted(df_files["slide"].unique())
     n = max(len(slides), 1)
     with plt.rc_context(_LAB_PLOT_RC):
-        fig, axes = plt.subplots(1, n, figsize=_mm_figsize(55 * n, 45), constrained_layout=True)
+        fig, axes = plt.subplots(
+            1, n, figsize=_mm_figsize(55 * n, 45), constrained_layout=True
+        )
         axes = np.atleast_1d(axes)
         for ax, slide in zip(axes, slides):
             grp = df_files[df_files["slide"] == slide]
-            ax.hist(grp["size_gb"], bins=20, color=_slide_color(slide, slides), edgecolor="white")
+            ax.hist(
+                grp["size_gb"],
+                bins=20,
+                color=_slide_color(slide, slides),
+                edgecolor="white",
+            )
             ax.set_title(f"{slide} (n={len(grp)}, {grp['size_gb'].sum():.1f} GB)")
             ax.set_xlabel("File size (GB)")
             ax.set_ylabel("Files")
@@ -607,18 +698,36 @@ def plot_slide_bar(df_files: pd.DataFrame, out_path: Path) -> str:
 
     if len(df_files) == 0:
         return ""
-    summary = df_files.groupby("slide").agg(Files=("fname", "count"), Total_GB=("size_gb", "sum")).reset_index()
+    summary = (
+        df_files.groupby("slide")
+        .agg(Files=("fname", "count"), Total_GB=("size_gb", "sum"))
+        .reset_index()
+    )
     colors = [_slide_color(s, summary["slide"]) for s in summary["slide"]]
 
     with plt.rc_context(_LAB_PLOT_RC):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=_mm_figsize(90, 45), constrained_layout=True)
-        ax1.bar(summary["slide"], summary["Files"], color=colors, edgecolor="white", width=0.5)
+        fig, (ax1, ax2) = plt.subplots(
+            1, 2, figsize=_mm_figsize(90, 45), constrained_layout=True
+        )
+        ax1.bar(
+            summary["slide"],
+            summary["Files"],
+            color=colors,
+            edgecolor="white",
+            width=0.5,
+        )
         ax1.set_title("File Count by Slide")
         ax1.set_ylabel("Files")
         for i, v in enumerate(summary["Files"]):
             ax1.text(i, v, str(v), ha="center", va="bottom")
 
-        ax2.bar(summary["slide"], summary["Total_GB"], color=colors, edgecolor="white", width=0.5)
+        ax2.bar(
+            summary["slide"],
+            summary["Total_GB"],
+            color=colors,
+            edgecolor="white",
+            width=0.5,
+        )
         ax2.set_title("Total Volume by Slide")
         ax2.set_ylabel("GB")
         for i, v in enumerate(summary["Total_GB"]):
@@ -640,12 +749,24 @@ def plot_channel_counts(xml_records: List[Dict[str, Any]], out_path: Path) -> st
         fig, ax = plt.subplots(figsize=_mm_figsize(50, 35), constrained_layout=True)
         channels = sorted(ch_counts.keys())
         counts = [ch_counts[c] for c in channels]
-        bars = ax.bar([str(c) for c in channels], counts, color="#0891b2", edgecolor="white", width=0.5)
+        bars = ax.bar(
+            [str(c) for c in channels],
+            counts,
+            color="#0891b2",
+            edgecolor="white",
+            width=0.5,
+        )
         ax.set_title("Channel Count Distribution")
         ax.set_xlabel("Channels per file")
         ax.set_ylabel("Files")
         for bar, cnt in zip(bars, counts):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height(), str(cnt), ha="center", va="bottom")
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height(),
+                str(cnt),
+                ha="center",
+                va="bottom",
+            )
         return _fig_to_png(fig, out_path)
 
 
@@ -659,12 +780,20 @@ def plot_pixel_sizes(px_df: pd.DataFrame, out_path: Path) -> str:
     slides = sorted(px_df["slide"].unique())
     with plt.rc_context(_LAB_PLOT_RC):
         fig, ax = plt.subplots(figsize=_mm_figsize(55, 40), constrained_layout=True)
-        data = [px_df.loc[px_df["slide"] == s, "pixel_size_um"].to_numpy() for s in slides]
+        data = [
+            px_df.loc[px_df["slide"] == s, "pixel_size_um"].to_numpy() for s in slides
+        ]
         ax.boxplot(data, tick_labels=slides, widths=0.3, showfliers=False)
         rng = np.random.default_rng(0)
         for i, (s, vals) in enumerate(zip(slides, data), start=1):
             jitter = rng.uniform(-0.08, 0.08, size=len(vals))
-            ax.scatter(np.full(len(vals), i) + jitter, vals, s=3.14, color=_slide_color(s, slides), alpha=0.7)
+            ax.scatter(
+                np.full(len(vals), i) + jitter,
+                vals,
+                s=3.14,
+                color=_slide_color(s, slides),
+                alpha=0.7,
+            )
         ax.set_title("Pixel Size by Slide")
         ax.set_ylabel("Pixel size (µm)")
         return _fig_to_png(fig, out_path)
@@ -680,19 +809,30 @@ def plot_dimensions(dim_df: pd.DataFrame, out_path: Path) -> str:
     with plt.rc_context(_LAB_PLOT_RC):
         fig, ax = plt.subplots(figsize=_mm_figsize(55, 55), constrained_layout=True)
         for slide, grp in dim_df.groupby("slide"):
-            ax.scatter(grp["Width"], grp["Height"], label=slide, s=3.14, color=_slide_color(slide, slides))
+            ax.scatter(
+                grp["Width"],
+                grp["Height"],
+                label=slide,
+                s=3.14,
+                color=_slide_color(slide, slides),
+            )
         ax.set_title("Image Dimensions")
         ax.set_xlabel("Width (px)")
         ax.set_ylabel("Height (px)")
         ax.legend()
-        lims = [min(ax.get_xlim()[0], ax.get_ylim()[0]), max(ax.get_xlim()[1], ax.get_ylim()[1])]
+        lims = [
+            min(ax.get_xlim()[0], ax.get_ylim()[0]),
+            max(ax.get_xlim()[1], ax.get_ylim()[1]),
+        ]
         ax.set_xlim(lims)
         ax.set_ylim(lims)
         ax.plot(lims, lims, "k--", alpha=0.3)
         return _fig_to_png(fig, out_path)
 
 
-def _read_raw_channel(path: str, channel: int = 0, scale_factor: float = 1.0) -> np.ndarray:
+def _read_raw_channel(
+    path: str, channel: int = 0, scale_factor: float = 1.0
+) -> np.ndarray:
     """Read one stitched channel from a per-scene mosaic CZI (lazy import).
 
     Ported from ``registration.py::read_czi_channel``. Requires the
@@ -713,7 +853,9 @@ def _read_raw_channel(path: str, channel: int = 0, scale_factor: float = 1.0) ->
     return np.squeeze(img)
 
 
-def plot_dapi_preview(r1_path: str, scene_label: str, out_path: Path, dapi_channel: int = 0) -> str:
+def plot_dapi_preview(
+    r1_path: str, scene_label: str, out_path: Path, dapi_channel: int = 0
+) -> str:
     """Low-resolution DAPI preview of one raw file. Ported from ``plot_dapi_preview``.
 
     Requires ``aicspylibczi`` (see :func:`_read_raw_channel`); returns
@@ -733,15 +875,22 @@ def plot_dapi_preview(r1_path: str, scene_label: str, out_path: Path, dapi_chann
             ax.set_title(f"{scene_label} — R1 DAPI (10% scale)")
             ax.axis("off")
             h, w = dapi.shape
-            ax.text(5, 15, f"{w}x{h} px | 10% scale", color="white",
-                    bbox=dict(boxstyle="round,pad=0.3", fc="black", alpha=0.6))
+            ax.text(
+                5,
+                15,
+                f"{w}x{h} px | 10% scale",
+                color="white",
+                bbox=dict(boxstyle="round,pad=0.3", fc="black", alpha=0.6),
+            )
             return _fig_to_png(fig, out_path)
     except Exception as e:
         logger.warning(f"DAPI preview failed: {e}")
         return ""
 
 
-def plot_round_dapi_grid(czi_paths: Dict[str, str], scene_label: str, out_path: Path, dapi_channel: int = 0) -> str:
+def plot_round_dapi_grid(
+    czi_paths: Dict[str, str], scene_label: str, out_path: Path, dapi_channel: int = 0
+) -> str:
     """Grid of DAPI previews across all rounds for one scene. Ported from ``plot_round_dapi_grid``."""
     import matplotlib.pyplot as plt
 
@@ -754,19 +903,34 @@ def plot_round_dapi_grid(czi_paths: Dict[str, str], scene_label: str, out_path: 
     cols = min(3, n)
     rows = (n + cols - 1) // cols
     with plt.rc_context(_LAB_PLOT_RC):
-        fig, axes = plt.subplots(rows, cols, figsize=_mm_figsize(cols * 40, rows * 40), constrained_layout=True)
+        fig, axes = plt.subplots(
+            rows,
+            cols,
+            figsize=_mm_figsize(cols * 40, rows * 40),
+            constrained_layout=True,
+        )
         axes = np.atleast_1d(axes).ravel()
 
         for ax, rnd in zip(axes, rounds):
             try:
-                dapi = _read_raw_channel(valid[rnd], channel=dapi_channel, scale_factor=0.05)
+                dapi = _read_raw_channel(
+                    valid[rnd], channel=dapi_channel, scale_factor=0.05
+                )
                 ax.imshow(dapi, cmap="gray", vmin=0, vmax=np.percentile(dapi, 99.5))
                 ax.set_title(rnd)
             except Exception:
-                ax.text(0.5, 0.5, f"{rnd}\n(no data)", ha="center", va="center", transform=ax.transAxes, color="gray")
+                ax.text(
+                    0.5,
+                    0.5,
+                    f"{rnd}\n(no data)",
+                    ha="center",
+                    va="center",
+                    transform=ax.transAxes,
+                    color="gray",
+                )
             ax.axis("off")
 
-        for ax in axes[len(rounds):]:
+        for ax in axes[len(rounds) :]:
             ax.axis("off")
             ax.set_visible(False)
 
@@ -796,26 +960,57 @@ def generate_all_qc_plots(
         return f"images/{name}.png"
 
     plots: Dict[str, str] = {}
-    plots["size_dist"] = rel("size_dist") if plot_size_distribution(df_files, img_dir / "size_dist.png") else ""
-    plots["slide_bar"] = rel("slide_bar") if plot_slide_bar(df_files, img_dir / "slide_bar.png") else ""
+    plots["size_dist"] = (
+        rel("size_dist")
+        if plot_size_distribution(df_files, img_dir / "size_dist.png")
+        else ""
+    )
+    plots["slide_bar"] = (
+        rel("slide_bar") if plot_slide_bar(df_files, img_dir / "slide_bar.png") else ""
+    )
     if xml_records:
-        plots["channels"] = rel("channels") if plot_channel_counts(xml_records, img_dir / "channels.png") else ""
+        plots["channels"] = (
+            rel("channels")
+            if plot_channel_counts(xml_records, img_dir / "channels.png")
+            else ""
+        )
     if len(px_df) > 0:
-        plots["pixel_sizes"] = rel("pixel_sizes") if plot_pixel_sizes(px_df, img_dir / "pixel_sizes.png") else ""
+        plots["pixel_sizes"] = (
+            rel("pixel_sizes")
+            if plot_pixel_sizes(px_df, img_dir / "pixel_sizes.png")
+            else ""
+        )
     if len(dim_df) > 0:
-        plots["dimensions"] = rel("dimensions") if plot_dimensions(dim_df, img_dir / "dimensions.png") else ""
+        plots["dimensions"] = (
+            rel("dimensions")
+            if plot_dimensions(dim_df, img_dir / "dimensions.png")
+            else ""
+        )
     if sample_r1_path:
         label = sample_scene_label or "Sample"
-        plots["dapi"] = rel("dapi") if plot_dapi_preview(sample_r1_path, label, img_dir / "dapi.png", dapi_channel) else ""
+        plots["dapi"] = (
+            rel("dapi")
+            if plot_dapi_preview(
+                sample_r1_path, label, img_dir / "dapi.png", dapi_channel
+            )
+            else ""
+        )
     if all_round_paths and len(all_round_paths) > 1:
         label = sample_scene_label or "Sample"
-        plots["dapi_rounds"] = rel("dapi_rounds") if plot_round_dapi_grid(all_round_paths, label, img_dir / "dapi_rounds.png", dapi_channel) else ""
+        plots["dapi_rounds"] = (
+            rel("dapi_rounds")
+            if plot_round_dapi_grid(
+                all_round_paths, label, img_dir / "dapi_rounds.png", dapi_channel
+            )
+            else ""
+        )
     return plots
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 7. HTML report
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def _status_badge(status: str) -> str:
     if status == "✓":
@@ -904,11 +1099,18 @@ def build_html_report(
     slide_list = sorted(df_files["slide"].unique()) if total_files else []
     n_pass = int((report["Status"] == "✓").sum()) if len(report) else 0
     n_checked = int((report["Status"] != "—").sum()) if len(report) else 0
-    n_scenes = len(df_parsed[["slide", "scene"]].drop_duplicates()) if len(df_parsed) else 0
-    overall = "PASS" if n_checked and n_pass == n_checked else "ISSUES DETECTED" if n_checked else "NO CHECKS RUN"
+    n_scenes = (
+        len(df_parsed[["slide", "scene"]].drop_duplicates()) if len(df_parsed) else 0
+    )
+    overall = (
+        "PASS"
+        if n_checked and n_pass == n_checked
+        else "ISSUES DETECTED" if n_checked else "NO CHECKS RUN"
+    )
     overall_color = "#16a34a" if overall == "PASS" else "#dc2626"
 
-    parts.append(f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+    parts.append(
+        f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
 <title>Raw Image Intake QC — {_html_escape(run_label)}</title>{_build_css()}</head><body>
 <div class="container">
 <div class="header"><h1>Raw Image Intake QC Report</h1>
@@ -919,21 +1121,32 @@ def build_html_report(
 <span>{total_files} files ({total_gb} GB)</span>
 <span>{n_scenes} scenes</span>
 <span><strong style="color:{overall_color}">{overall}</strong></span>
-</div></div>""")
+</div></div>"""
+    )
 
-    parts.append(f"""<div class="ribbon">
+    parts.append(
+        f"""<div class="ribbon">
 <div class="ribbon-card pass"><div class="num">{n_pass}/{n_checked}</div><div class="lbl">Checks Passed</div></div>
 <div class="ribbon-card info"><div class="num">{total_files}</div><div class="lbl">Files Scanned</div></div>
 <div class="ribbon-card info"><div class="num">{total_gb} GB</div><div class="lbl">Total Data</div></div>
 <div class="ribbon-card info"><div class="num">{len(slide_list)}</div><div class="lbl">Slides</div></div>
 <div class="ribbon-card info"><div class="num">{n_scenes}</div><div class="lbl">Scenes</div></div>
-</div>""")
+</div>"""
+    )
 
-    tabs = [("exec", "Executive Summary"), ("inventory", "File Inventory"), ("qcplots", "QC Plots"),
-            ("filenames", "Filename Validation"), ("metadata", "OME Metadata"), ("preview", "Sample Preview")]
+    tabs = [
+        ("exec", "Executive Summary"),
+        ("inventory", "File Inventory"),
+        ("qcplots", "QC Plots"),
+        ("filenames", "Filename Validation"),
+        ("metadata", "OME Metadata"),
+        ("preview", "Sample Preview"),
+    ]
     parts.append('<div class="tabs">')
     for i, (tid, tlabel) in enumerate(tabs):
-        parts.append(f'<button class="tab-btn{" active" if i == 0 else ""}" onclick="switchTab(\'{tid}\')">{_html_escape(tlabel)}</button>')
+        parts.append(
+            f'<button class="tab-btn{" active" if i == 0 else ""}" onclick="switchTab(\'{tid}\')">{_html_escape(tlabel)}</button>'
+        )
     parts.append("</div>")
 
     # Tab 1: Executive Summary
@@ -943,14 +1156,18 @@ def build_html_report(
         parts.append('<div class="grid">')
         for _, r in report.iterrows():
             cls = "pass" if r["Status"] == "✓" else "fail" if r["Status"] == "⚠" else ""
-            parts.append(f'<div class="g-item {cls}"><span class="badge {cls}">{_html_escape(r["Status"])}</span>'
-                         f'<span class="gl">{_html_escape(r["Check"])}</span>'
-                         f'<span class="gd">{_html_escape(r["Detail"])}</span></div>')
+            parts.append(
+                f'<div class="g-item {cls}"><span class="badge {cls}">{_html_escape(r["Status"])}</span>'
+                f'<span class="gl">{_html_escape(r["Check"])}</span>'
+                f'<span class="gd">{_html_escape(r["Detail"])}</span></div>'
+            )
         parts.append("</div>")
     parts.append("<h3>Scene Coverage</h3>")
-    parts.append(f'<p>Expecting <strong>{len(config.expected_rounds)}</strong> round(s) per scene: '
-                 f'<code>{_html_escape(", ".join(config.expected_rounds))}</code>. '
-                 f'{"All present." if not missing else f"{len(missing)} missing combination(s) — see Filename Validation tab."}</p>')
+    parts.append(
+        f"<p>Expecting <strong>{len(config.expected_rounds)}</strong> round(s) per scene: "
+        f'<code>{_html_escape(", ".join(config.expected_rounds))}</code>. '
+        f'{"All present." if not missing else f"{len(missing)} missing combination(s) — see Filename Validation tab."}</p>'
+    )
     if qc_plots.get("slide_bar"):
         parts.append(f'<div class="plot-box"><img src="{qc_plots["slide_bar"]}"></div>')
     parts.append("</div>")
@@ -958,45 +1175,75 @@ def build_html_report(
     # Tab 2: Inventory
     parts.append('<div id="tab-inventory" class="tab-panel">')
     parts.append("<h2>File Inventory</h2>")
-    parts.append(f'<p>Total <strong>{total_files}</strong> files across <strong>{len(slide_list)}</strong> slide(s), '
-                 f'<strong>{total_gb} GB</strong>.</p>')
+    parts.append(
+        f"<p>Total <strong>{total_files}</strong> files across <strong>{len(slide_list)}</strong> slide(s), "
+        f"<strong>{total_gb} GB</strong>.</p>"
+    )
     if total_files:
         grp = df_files.groupby("slide")["size_gb"]
         parts.append("<h3>Per-Slide Details</h3>")
-        parts.append("<table><tr><th>Slide</th><th>Files</th><th>Total (GB)</th><th>Min (GB)</th><th>Max (GB)</th><th>Median (GB)</th></tr>")
+        parts.append(
+            "<table><tr><th>Slide</th><th>Files</th><th>Total (GB)</th><th>Min (GB)</th><th>Max (GB)</th><th>Median (GB)</th></tr>"
+        )
         for s in slide_list:
             g = grp.get_group(s)
-            parts.append(f"<tr><td>{_html_escape(s)}</td><td>{len(g)}</td><td>{g.sum():.2f}</td>"
-                         f"<td>{g.min():.2f}</td><td>{g.max():.2f}</td><td>{g.median():.2f}</td></tr>")
+            parts.append(
+                f"<tr><td>{_html_escape(s)}</td><td>{len(g)}</td><td>{g.sum():.2f}</td>"
+                f"<td>{g.min():.2f}</td><td>{g.max():.2f}</td><td>{g.median():.2f}</td></tr>"
+            )
         parts.append("</table>")
     if qc_plots.get("size_dist"):
-        parts.append(f'<h3>File Size Distribution</h3><div class="plot-box"><img src="{qc_plots["size_dist"]}"></div>')
+        parts.append(
+            f'<h3>File Size Distribution</h3><div class="plot-box"><img src="{qc_plots["size_dist"]}"></div>'
+        )
     parts.append("</div>")
 
     # Tab 3: QC Plots
     parts.append('<div id="tab-qcplots" class="tab-panel">')
     parts.append("<h2>Quality Control Plots</h2>")
-    for pid, pname in [("channels", "Channel Counts"), ("pixel_sizes", "Pixel Sizes"), ("dimensions", "Dimensions")]:
+    for pid, pname in [
+        ("channels", "Channel Counts"),
+        ("pixel_sizes", "Pixel Sizes"),
+        ("dimensions", "Dimensions"),
+    ]:
         if qc_plots.get(pid):
-            parts.append(f'<h3>{pname}</h3><div class="plot-box"><img src="{qc_plots[pid]}"></div>')
+            parts.append(
+                f'<h3>{pname}</h3><div class="plot-box"><img src="{qc_plots[pid]}"></div>'
+            )
     parts.append("</div>")
 
     # Tab 4: Filename Validation
     parts.append('<div id="tab-filenames" class="tab-panel">')
     parts.append("<h2>Filename Parsing Validation</h2>")
     if len(df_parsed) > 0:
-        parts.append(f'<p>Parsed <strong>{len(df_parsed)}/{total_files}</strong> filenames successfully '
-                     f'({_pct(len(df_parsed), total_files)}).'
-                     f'{"" if not unparsed else f" <span style=color:#dc2626>{len(unparsed)} failure(s)</span>."}</p>')
+        parts.append(
+            f"<p>Parsed <strong>{len(df_parsed)}/{total_files}</strong> filenames successfully "
+            f"({_pct(len(df_parsed), total_files)})."
+            f'{"" if not unparsed else f" <span style=color:#dc2626>{len(unparsed)} failure(s)</span>."}</p>'
+        )
         rounds_ordered = sorted(df_parsed["round"].unique(), key=_round_sort_key)
         scenes_ordered = sorted(df_parsed["scene"].unique())
-        pivot_tmp = df_parsed.pivot_table(index="round", columns="scene", values="size_gb", aggfunc="count", fill_value=0)
+        pivot_tmp = df_parsed.pivot_table(
+            index="round",
+            columns="scene",
+            values="size_gb",
+            aggfunc="count",
+            fill_value=0,
+        )
         parts.append("<h3>Round x Scene Matrix (file count)</h3>")
-        parts.append("<table><tr><th>Round</th>" + "".join(f"<th>{_html_escape(s)}</th>" for s in scenes_ordered) + "</tr>")
+        parts.append(
+            "<table><tr><th>Round</th>"
+            + "".join(f"<th>{_html_escape(s)}</th>" for s in scenes_ordered)
+            + "</tr>"
+        )
         for rnd in rounds_ordered:
             parts.append(f"<tr><td><strong>{rnd}</strong></td>")
             for sc in scenes_ordered:
-                v = pivot_tmp.loc[rnd, sc] if rnd in pivot_tmp.index and sc in pivot_tmp.columns else 0
+                v = (
+                    pivot_tmp.loc[rnd, sc]
+                    if rnd in pivot_tmp.index and sc in pivot_tmp.columns
+                    else 0
+                )
                 bg = "background:#dcfce7" if v >= 1 else "background:#fef2f2"
                 parts.append(f'<td style="{bg};text-align:center">{int(v)}</td>')
             parts.append("</tr>")
@@ -1008,12 +1255,20 @@ def build_html_report(
         parts.append("</table>")
     parts.append('<div style="margin-top:14px">')
     if not missing:
-        parts.append('<span style="color:#16a34a;font-weight:600">All expected rounds present for every scene.</span>')
+        parts.append(
+            '<span style="color:#16a34a;font-weight:600">All expected rounds present for every scene.</span>'
+        )
     else:
-        parts.append(f'<span style="color:#dc2626;font-weight:600">{len(missing)} missing round/scene combination(s).</span>')
-        parts.append("<table><tr><th>Slide</th><th>Scene</th><th>Missing round</th></tr>")
+        parts.append(
+            f'<span style="color:#dc2626;font-weight:600">{len(missing)} missing round/scene combination(s).</span>'
+        )
+        parts.append(
+            "<table><tr><th>Slide</th><th>Scene</th><th>Missing round</th></tr>"
+        )
         for m in missing:
-            parts.append(f"<tr><td>{_html_escape(m['slide'])}</td><td>{_html_escape(m['scene'])}</td><td>{_html_escape(m['round'])}</td></tr>")
+            parts.append(
+                f"<tr><td>{_html_escape(m['slide'])}</td><td>{_html_escape(m['scene'])}</td><td>{_html_escape(m['round'])}</td></tr>"
+            )
         parts.append("</table>")
     parts.append("</div></div>")
 
@@ -1021,75 +1276,110 @@ def build_html_report(
     parts.append('<div id="tab-metadata" class="tab-panel">')
     parts.append("<h2>OME Metadata &amp; Channel Analysis</h2>")
     if xml_records:
-        parts.append(f"<p>Parsed <strong>{len(xml_records)}</strong> OME-XML sidecar(s) "
-                     f"({_pct(len(xml_records), total_files)} of files).</p>")
+        parts.append(
+            f"<p>Parsed <strong>{len(xml_records)}</strong> OME-XML sidecar(s) "
+            f"({_pct(len(xml_records), total_files)} of files).</p>"
+        )
         ch_counts: Dict[int, int] = defaultdict(int)
         for r in xml_records:
             ch_counts[r["n_channels"]] += 1
-        parts.append("<h3>Channel Count Distribution</h3><table><tr><th>Channels</th><th>Files</th><th>%</th></tr>")
+        parts.append(
+            "<h3>Channel Count Distribution</h3><table><tr><th>Channels</th><th>Files</th><th>%</th></tr>"
+        )
         for n in sorted(ch_counts):
-            parts.append(f"<tr><td>{n}</td><td>{ch_counts[n]}</td><td>{_pct(ch_counts[n], len(xml_records))}</td></tr>")
+            parts.append(
+                f"<tr><td>{n}</td><td>{ch_counts[n]}</td><td>{_pct(ch_counts[n], len(xml_records))}</td></tr>"
+            )
         parts.append("</table>")
-        bad_ch = sum(1 for r in xml_records if r["n_channels"] != config.expected_channels)
+        bad_ch = sum(
+            1 for r in xml_records if r["n_channels"] != config.expected_channels
+        )
         color = "#16a34a" if bad_ch == 0 else "#dc2626"
-        msg = (f"All {len(xml_records)} files have {config.expected_channels} channels." if bad_ch == 0
-               else f"{bad_ch} file(s) have non-standard channel counts.")
+        msg = (
+            f"All {len(xml_records)} files have {config.expected_channels} channels."
+            if bad_ch == 0
+            else f"{bad_ch} file(s) have non-standard channel counts."
+        )
         parts.append(f'<div style="color:{color}">{msg}</div>')
         if len(px_df) > 0:
             parts.append("<h3>Pixel Size (µm/px)</h3>")
-            parts.append("<table><tr><th>Slide</th><th>Count</th><th>Mean</th><th>Std</th><th>Unique</th><th>Status</th></tr>")
+            parts.append(
+                "<table><tr><th>Slide</th><th>Count</th><th>Mean</th><th>Std</th><th>Unique</th><th>Status</th></tr>"
+            )
             for s in slide_list:
                 sd = px_df[px_df["slide"] == s]
                 if len(sd) == 0:
                     continue
                 uniq = sd["pixel_size_um"].unique()
                 ok = len(uniq) == 1
-                parts.append(f"<tr><td>{_html_escape(s)}</td><td>{len(sd)}</td><td>{sd['pixel_size_um'].mean():.4f}</td>"
-                             f"<td>{sd['pixel_size_um'].std():.4f}</td>"
-                             f"<td>{', '.join(f'{v:.4f}' for v in uniq)}</td>"
-                             f"<td>{_status_badge('✓' if ok else '⚠')}</td></tr>")
+                parts.append(
+                    f"<tr><td>{_html_escape(s)}</td><td>{len(sd)}</td><td>{sd['pixel_size_um'].mean():.4f}</td>"
+                    f"<td>{sd['pixel_size_um'].std():.4f}</td>"
+                    f"<td>{', '.join(f'{v:.4f}' for v in uniq)}</td>"
+                    f"<td>{_status_badge('✓' if ok else '⚠')}</td></tr>"
+                )
             parts.append("</table>")
         if qc_plots.get("channels"):
-            parts.append(f'<div class="plot-box"><img src="{qc_plots["channels"]}"></div>')
+            parts.append(
+                f'<div class="plot-box"><img src="{qc_plots["channels"]}"></div>'
+            )
         if qc_plots.get("pixel_sizes"):
-            parts.append(f'<div class="plot-box"><img src="{qc_plots["pixel_sizes"]}"></div>')
+            parts.append(
+                f'<div class="plot-box"><img src="{qc_plots["pixel_sizes"]}"></div>'
+            )
         if len(dim_df) > 0:
             parts.append("<h3>Image Dimensions</h3>")
-            parts.append("<table><tr><th>Dimension</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th></tr>")
+            parts.append(
+                "<table><tr><th>Dimension</th><th>Mean</th><th>Median</th><th>Min</th><th>Max</th></tr>"
+            )
             for col in ["Width", "Height", "Channels", "Z-slices"]:
                 if col in dim_df.columns:
-                    parts.append(f"<tr><td><strong>{col}</strong></td><td>{dim_df[col].mean():.0f}</td>"
-                                 f"<td>{dim_df[col].median():.0f}</td><td>{dim_df[col].min():.0f}</td>"
-                                 f"<td>{dim_df[col].max():.0f}</td></tr>")
+                    parts.append(
+                        f"<tr><td><strong>{col}</strong></td><td>{dim_df[col].mean():.0f}</td>"
+                        f"<td>{dim_df[col].median():.0f}</td><td>{dim_df[col].min():.0f}</td>"
+                        f"<td>{dim_df[col].max():.0f}</td></tr>"
+                    )
             parts.append("</table>")
         if qc_plots.get("dimensions"):
-            parts.append(f'<div class="plot-box"><img src="{qc_plots["dimensions"]}"></div>')
+            parts.append(
+                f'<div class="plot-box"><img src="{qc_plots["dimensions"]}"></div>'
+            )
     parts.append("</div>")
 
     # Tab 6: Sample Preview
     parts.append('<div id="tab-preview" class="tab-panel">')
     parts.append("<h2>Sample DAPI Preview</h2>")
     if sample_info:
-        parts.append(f'<p>Slide: <strong>{_html_escape(sample_info.get("slide", ""))}</strong> | '
-                     f'Scene: <strong>{_html_escape(sample_info.get("scene", ""))}</strong></p>')
+        parts.append(
+            f'<p>Slide: <strong>{_html_escape(sample_info.get("slide", ""))}</strong> | '
+            f'Scene: <strong>{_html_escape(sample_info.get("scene", ""))}</strong></p>'
+        )
     if qc_plots.get("dapi"):
         parts.append(f'<div class="plot-box"><img src="{qc_plots["dapi"]}"></div>')
     if qc_plots.get("dapi_rounds"):
-        parts.append(f'<h3>All Rounds — DAPI Comparison</h3><div class="plot-box"><img src="{qc_plots["dapi_rounds"]}"></div>')
+        parts.append(
+            f'<h3>All Rounds — DAPI Comparison</h3><div class="plot-box"><img src="{qc_plots["dapi_rounds"]}"></div>'
+        )
     if not qc_plots.get("dapi"):
-        parts.append('<p style="color:#94a3b8;font-style:italic">No DAPI preview available (pass generate_dapi_preview=True and ensure aicspylibczi is installed).</p>')
+        parts.append(
+            '<p style="color:#94a3b8;font-style:italic">No DAPI preview available (pass generate_dapi_preview=True and ensure aicspylibczi is installed).</p>'
+        )
     parts.append("</div>")
 
-    parts.append("""<script>
+    parts.append(
+        """<script>
 function switchTab(id){document.querySelectorAll('.tab-panel').forEach(function(p){p.classList.remove('active')});
 document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active')});
 document.getElementById('tab-'+id).classList.add('active');
 [].forEach.call(document.querySelectorAll('.tab-btn'),function(b){if(b.getAttribute('onclick')&&b.getAttribute('onclick').includes(id))b.classList.add('active')});}
-</script>""")
+</script>"""
+    )
 
     html_path = str(Path(reports_dir) / "intake_qc_report.html")
-    parts.append(f'<div class="footer">Generated by <strong>{_html_escape(pipeline_name)}.step01_scan_intake</strong><br>'
-                 f'<code>{_html_escape(html_path)}</code></div>')
+    parts.append(
+        f'<div class="footer">Generated by <strong>{_html_escape(pipeline_name)}.step01_scan_intake</strong><br>'
+        f"<code>{_html_escape(html_path)}</code></div>"
+    )
     parts.append("</div></body></html>")
     return "\n".join(parts)
 
@@ -1097,6 +1387,7 @@ document.getElementById('tab-'+id).classList.add('active');
 # ═══════════════════════════════════════════════════════════════════════════
 # 8. step01_scan_intake — the public step function
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @dataclass
 class IntakeScanResult:
@@ -1116,7 +1407,11 @@ class IntakeScanResult:
     @property
     def all_checks_passed(self) -> bool:
         """True iff every *run* check (Status != '—') passed. False if none ran."""
-        checked = self.checks[self.checks["Status"] != "—"] if len(self.checks) else self.checks
+        checked = (
+            self.checks[self.checks["Status"] != "—"]
+            if len(self.checks)
+            else self.checks
+        )
         return len(checked) > 0 and bool((checked["Status"] == "✓").all())
 
 
@@ -1201,7 +1496,9 @@ def step01_scan_intake(
 
     # 2. Filename parsing + coverage
     df_parsed, unparsed = parse_filenames(df_files, pattern=config.filename_pattern)
-    pivot, missing = check_round_scene_coverage(df_parsed, expected_rounds=config.expected_rounds)
+    pivot, missing = check_round_scene_coverage(
+        df_parsed, expected_rounds=config.expected_rounds
+    )
 
     # 3. OME-XML metadata
     xml_records = parse_ome_sidecars(slide_dirs, xml_suffix=config.ome_xml_suffix)
@@ -1209,35 +1506,66 @@ def step01_scan_intake(
     dim_df = check_dimensions(xml_records)
 
     # 4. Structured report
-    checks = build_intake_report(df_files, df_parsed, unparsed, xml_records, px_df, missing, config=config)
+    checks = build_intake_report(
+        df_files, df_parsed, unparsed, xml_records, px_df, missing, config=config
+    )
 
     if verbose:
         n_pass = int((checks["Status"] == "✓").sum())
         n_checked = int((checks["Status"] != "—").sum())
-        logger.info(f"step01_scan_intake: {n_pass}/{n_checked} checks passed "
-                    f"({len(df_files)} files, {len(missing)} missing round/scene combos, "
-                    f"{len(unparsed)} unparsed filenames)")
+        logger.info(
+            f"step01_scan_intake: {n_pass}/{n_checked} checks passed "
+            f"({len(df_files)} files, {len(missing)} missing round/scene combos, "
+            f"{len(unparsed)} unparsed filenames)"
+        )
 
     html_path: Optional[str] = None
     if generate_html_report:
         if sample_slide is None:
             slides = sorted(df_files["slide"].unique())
             sample_slide = slides[0] if slides else None
-        sample_r1 = find_sample_raw_file(df_parsed, sample_slide, sample_scene, sample_round) if generate_dapi_preview else None
-        sample_rounds = find_all_round_paths(df_parsed, sample_slide, sample_scene) if generate_dapi_preview else {}
+        sample_r1 = (
+            find_sample_raw_file(df_parsed, sample_slide, sample_scene, sample_round)
+            if generate_dapi_preview
+            else None
+        )
+        sample_rounds = (
+            find_all_round_paths(df_parsed, sample_slide, sample_scene)
+            if generate_dapi_preview
+            else {}
+        )
         sample_label = f"{sample_slide} / {sample_scene}" if sample_slide else None
 
         qc_plots = generate_all_qc_plots(
-            df_files, xml_records, px_df, dim_df, str(reports_path),
-            sample_r1_path=sample_r1, sample_scene_label=sample_label,
+            df_files,
+            xml_records,
+            px_df,
+            dim_df,
+            str(reports_path),
+            sample_r1_path=sample_r1,
+            sample_scene_label=sample_label,
             all_round_paths=sample_rounds,
         )
 
-        sample_info = {"slide": sample_slide, "scene": sample_scene} if sample_slide else None
+        sample_info = (
+            {"slide": sample_slide, "scene": sample_scene} if sample_slide else None
+        )
         html = build_html_report(
-            df_files, df_parsed, unparsed, xml_records, px_df, dim_df,
-            checks, missing, qc_plots, raw_dir, str(reports_path), run_label,
-            config=config, sample_info=sample_info, pipeline_name=pipeline_name,
+            df_files,
+            df_parsed,
+            unparsed,
+            xml_records,
+            px_df,
+            dim_df,
+            checks,
+            missing,
+            qc_plots,
+            raw_dir,
+            str(reports_path),
+            run_label,
+            config=config,
+            sample_info=sample_info,
+            pipeline_name=pipeline_name,
         )
         html_path = str(reports_path / "intake_qc_report.html")
         Path(html_path).write_text(html, encoding="utf-8")
@@ -1248,9 +1576,16 @@ def step01_scan_intake(
             logger.info(f"  HTML report: {html_path}")
 
     result = IntakeScanResult(
-        inventory=df_files, parsed=df_parsed, unparsed=unparsed,
-        coverage_pivot=pivot, coverage_missing=missing, xml_records=xml_records,
-        pixel_sizes=px_df, dimensions=dim_df, checks=checks, html_report_path=html_path,
+        inventory=df_files,
+        parsed=df_parsed,
+        unparsed=unparsed,
+        coverage_pivot=pivot,
+        coverage_missing=missing,
+        xml_records=xml_records,
+        pixel_sizes=px_df,
+        dimensions=dim_df,
+        checks=checks,
+        html_report_path=html_path,
     )
 
     if strict:

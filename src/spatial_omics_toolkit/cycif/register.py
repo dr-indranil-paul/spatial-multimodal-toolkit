@@ -55,7 +55,7 @@ tests do).
 
 import os
 import re
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -69,6 +69,7 @@ from spatial_omics_toolkit.cycif.config import (
 # ---------------------------------------------------------------------------
 # Round ordering
 # ---------------------------------------------------------------------------
+
 
 def _round_sort_key(
     label: str,
@@ -94,6 +95,7 @@ def _round_sort_key(
 # CZI I/O
 # ---------------------------------------------------------------------------
 
+
 def get_czi_pixel_size(czi_path: str) -> Optional[float]:
     """Extract physical pixel size in micrometers from CZI XML metadata.
 
@@ -104,14 +106,15 @@ def get_czi_pixel_size(czi_path: str) -> Optional[float]:
     try:
         import aicspylibczi
         import xml.etree.ElementTree as ET
+
         czi = aicspylibczi.CziFile(czi_path)
         meta = czi.meta
         root = ET.fromstring(meta) if isinstance(meta, str) else meta
-        for dist in root.iter('Distance'):
-            if dist.get('Id') == 'X':
-                val = dist.find('Value')
+        for dist in root.iter("Distance"):
+            if dist.get("Id") == "X":
+                val = dist.find("Value")
                 if val is not None:
-                    return float(val.text) * 1e6   # meters -> micrometers
+                    return float(val.text) * 1e6  # meters -> micrometers
     except Exception:
         pass
     return None
@@ -121,20 +124,24 @@ def _get_czi_num_channels(czi_path: str, fallback: int = 5) -> int:
     """Auto-detect channel count from CZI metadata. Falls back to ``fallback``."""
     try:
         import aicspylibczi
+
         czi = aicspylibczi.CziFile(czi_path)
         dims = czi.get_dims_shape()
         for d in dims:
-            if 'C' in d:
-                _start, count = d['C']
+            if "C" in d:
+                _start, count = d["C"]
                 return count
     except Exception:
         pass
     return fallback
 
 
-def read_czi_channel(czi_path: str, channel: int = 0, scale_factor: float = 1.0) -> np.ndarray:
+def read_czi_channel(
+    czi_path: str, channel: int = 0, scale_factor: float = 1.0
+) -> np.ndarray:
     """Read one stitched channel from a per-scene mosaic CZI. Returns 2D uint16."""
     import aicspylibczi
+
     czi = aicspylibczi.CziFile(czi_path)
     img = czi.read_mosaic(C=channel, scale_factor=scale_factor)
     return np.squeeze(img)
@@ -153,6 +160,7 @@ def read_czi_all_channels(
     stays consistent and the gap is visible to the caller.
     """
     import aicspylibczi
+
     czi = aicspylibczi.CziFile(czi_path)
     if num_channels is None:
         num_channels = _get_czi_num_channels(czi_path)
@@ -163,8 +171,12 @@ def read_czi_all_channels(
             img = czi.read_mosaic(C=c, scale_factor=scale_factor)
             channels.append(np.squeeze(img))
         except Exception as e:
-            print(f'  Channel {c}: read failed ({e}) — filling with zeros')
-            placeholder = np.zeros_like(channels[0]) if channels else np.zeros((1, 1), dtype=np.uint16)
+            print(f"  Channel {c}: read failed ({e}) — filling with zeros")
+            placeholder = (
+                np.zeros_like(channels[0])
+                if channels
+                else np.zeros((1, 1), dtype=np.uint16)
+            )
             channels.append(placeholder)
 
     return np.stack(channels, axis=0)
@@ -173,6 +185,7 @@ def read_czi_all_channels(
 # ---------------------------------------------------------------------------
 # Normalization
 # ---------------------------------------------------------------------------
+
 
 def _normalize_uint8(img: np.ndarray) -> np.ndarray:
     """Percentile contrast-stretch to uint8 for feature detection.
@@ -200,6 +213,7 @@ def _normalize_uint8(img: np.ndarray) -> np.ndarray:
 # Transform validation
 # ---------------------------------------------------------------------------
 
+
 def _validate_transform(
     transform: np.ndarray,
     image_shape: Tuple[int, int],
@@ -222,21 +236,24 @@ def _validate_transform(
     diag = float(np.sqrt(image_shape[0] ** 2 + image_shape[1] ** 2))
 
     if not (scale_range[0] <= scale <= scale_range[1]):
-        return False, (f'scale={scale:.4f} outside [{scale_range[0]:.2f}, {scale_range[1]:.2f}]')
+        return False, (
+            f"scale={scale:.4f} outside [{scale_range[0]:.2f}, {scale_range[1]:.2f}]"
+        )
     if abs(angle) > max_angle_deg:
-        return False, f'angle={angle:.2f} deg exceeds +/-{max_angle_deg} deg'
+        return False, f"angle={angle:.2f} deg exceeds +/-{max_angle_deg} deg"
     max_shift = max_shift_fraction * diag
     if abs(tx) > max_shift or abs(ty) > max_shift:
         return False, (
-            f'shift=({tx:+.1f}, {ty:+.1f}) px exceeds '
-            f'{max_shift_fraction:.0%} of diagonal ({diag:.0f} px)'
+            f"shift=({tx:+.1f}, {ty:+.1f}) px exceeds "
+            f"{max_shift_fraction:.0%} of diagonal ({diag:.0f} px)"
         )
-    return True, ''
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
 # Feature-based registration (SIFT + RANSAC)
 # ---------------------------------------------------------------------------
+
 
 def register_round_pair(
     ref_dapi: np.ndarray,
@@ -299,11 +316,11 @@ def register_round_pair(
     n_kp_mov = len(kp_mov) if kp_mov else 0
 
     if des_ref is None or des_mov is None or n_kp_ref < 4 or n_kp_mov < 4:
-        return None, 0, 0, f'insufficient keypoints (ref={n_kp_ref}, mov={n_kp_mov})'
+        return None, 0, 0, f"insufficient keypoints (ref={n_kp_ref}, mov={n_kp_mov})"
 
     flann = cv2.FlannBasedMatcher(
-        {'algorithm': 1, 'trees': 5},   # FLANN_INDEX_KDTREE
-        {'checks': flann_checks},
+        {"algorithm": 1, "trees": 5},  # FLANN_INDEX_KDTREE
+        {"checks": flann_checks},
     )
     knn = flann.knnMatch(des_ref, des_mov, k=2)
 
@@ -315,7 +332,12 @@ def register_round_pair(
                 good.append(m)
 
     if len(good) < 4:
-        return None, 0, len(good), f'too few matches after Lowe ratio test ({len(good)} < 4)'
+        return (
+            None,
+            0,
+            len(good),
+            f"too few matches after Lowe ratio test ({len(good)} < 4)",
+        )
 
     # src = moving keypoints, dst = reference keypoints
     # estimateAffinePartial2D finds T: src -> dst  (moving -> reference)
@@ -323,7 +345,8 @@ def register_round_pair(
     dst_pts = np.float32([kp_ref[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
 
     transform, inlier_mask = cv2.estimateAffinePartial2D(
-        src_pts, dst_pts,
+        src_pts,
+        dst_pts,
         method=cv2.RANSAC,
         ransacReprojThreshold=ransac_threshold,
         confidence=ransac_confidence,
@@ -331,17 +354,21 @@ def register_round_pair(
     )
 
     if transform is None:
-        return None, 0, len(good), 'RANSAC failed to find a consistent transform'
+        return None, 0, len(good), "RANSAC failed to find a consistent transform"
 
     n_inliers = int(inlier_mask.sum()) if inlier_mask is not None else 0
 
     valid, reason = _validate_transform(
-        transform, ref_dapi.shape, max_angle_deg, scale_range, max_shift_fraction,
+        transform,
+        ref_dapi.shape,
+        max_angle_deg,
+        scale_range,
+        max_shift_fraction,
     )
     if not valid:
-        return None, n_inliers, len(good), f'transform sanity check failed: {reason}'
+        return None, n_inliers, len(good), f"transform sanity check failed: {reason}"
 
-    return transform, n_inliers, len(good), 'ok'
+    return transform, n_inliers, len(good), "ok"
 
 
 def warp_image(
@@ -355,8 +382,10 @@ def warp_image(
     generate and save a border mask to track these padding regions.
     """
     import cv2
+
     return cv2.warpAffine(
-        img, transform,
+        img,
+        transform,
         (output_shape[1], output_shape[0]),
         flags=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_CONSTANT,
@@ -367,6 +396,7 @@ def warp_image(
 # ---------------------------------------------------------------------------
 # CZI filename parsing
 # ---------------------------------------------------------------------------
+
 
 def parse_czi_filename(
     filename: str,
@@ -391,12 +421,12 @@ def parse_czi_filename(
     m = re.match(pattern, filename)
     if m:
         return {
-            'round':  m.group(1),
-            'markers': m.group(2),
-            'slide':   m.group(3),
-            'date':    m.group(4).replace('_', '-'),
-            'acq_id':  m.group(5),
-            'scene':   m.group(6),
+            "round": m.group(1),
+            "markers": m.group(2),
+            "slide": m.group(3),
+            "date": m.group(4).replace("_", "-"),
+            "acq_id": m.group(5),
+            "scene": m.group(6),
         }
     return None
 
@@ -417,24 +447,29 @@ def group_czis_by_scene(
     {(slide, scene): {round_label: czi_path, ...}}  — rounds in biological order
     """
     from collections import defaultdict
+
     groups: Dict = defaultdict(dict)
     unparsed = []
 
     for fname in sorted(os.listdir(czi_dir)):
-        if not fname.lower().endswith('.czi'):
+        if not fname.lower().endswith(".czi"):
             continue
         info = parse_czi_filename(fname, pattern=filename_pattern)
         if info:
-            key = (info['slide'], info['scene'])
-            groups[key][info['round']] = os.path.join(czi_dir, fname)
+            key = (info["slide"], info["scene"])
+            groups[key][info["round"]] = os.path.join(czi_dir, fname)
         else:
             unparsed.append(fname)
 
     if unparsed:
-        print(f'Skipped {len(unparsed)} unparseable filenames: {unparsed[:3]}{"..." if len(unparsed) > 3 else ""}')
+        print(
+            f'Skipped {len(unparsed)} unparseable filenames: {unparsed[:3]}{"..." if len(unparsed) > 3 else ""}'
+        )
 
     return {
-        k: dict(sorted(v.items(), key=lambda x: _round_sort_key(x[0], round_label_pattern)))
+        k: dict(
+            sorted(v.items(), key=lambda x: _round_sort_key(x[0], round_label_pattern))
+        )
         for k, v in sorted(groups.items())
     }
 
@@ -443,10 +478,11 @@ def group_czis_by_scene(
 # step03_register_rounds
 # ---------------------------------------------------------------------------
 
+
 def step03_register_rounds(
     czis: Dict[str, str],
     config: Optional[RegistrationConfig] = None,
-    ref_round: str = 'R1',
+    ref_round: str = "R1",
     dapi_channel: int = 0,
     num_channels: Optional[int] = None,
     scale_factor: float = 1.0,
@@ -526,29 +562,33 @@ def step03_register_rounds(
 
     rounds = sorted(czis.keys(), key=lambda r: _round_sort_key(r, round_label_pattern))
     if ref_round not in rounds:
-        raise ValueError(f"Reference round '{ref_round}' not found. Available: {rounds}")
+        raise ValueError(
+            f"Reference round '{ref_round}' not found. Available: {rounds}"
+        )
 
     if num_channels is None:
         num_channels = _get_czi_num_channels(czis[ref_round])
         if verbose:
-            print(f'  Auto-detected {num_channels} channels in {ref_round}')
+            print(f"  Auto-detected {num_channels} channels in {ref_round}")
 
     pixel_size_um = get_czi_pixel_size(czis[ref_round])
     if verbose:
         if pixel_size_um:
-            print(f'  Pixel size: {pixel_size_um:.4f} um/px')
+            print(f"  Pixel size: {pixel_size_um:.4f} um/px")
         else:
-            print('  Pixel size not found in CZI metadata — outputs will lack spatial calibration')
+            print(
+                "  Pixel size not found in CZI metadata — outputs will lack spatial calibration"
+            )
 
     nonref_rounds = [r for r in rounds if r != ref_round]
 
     if verbose:
-        print(f'Reading reference round ({ref_round})...')
+        print(f"Reading reference round ({ref_round})...")
     ref_ch = read_czi_all_channels(czis[ref_round], num_channels, scale_factor)
     ref_dapi = ref_ch[dapi_channel]
     ref_shape = ref_dapi.shape
     if verbose:
-        print(f'  Mosaic shape: {ref_shape[0]} x {ref_shape[1]} px')
+        print(f"  Mosaic shape: {ref_shape[0]} x {ref_shape[1]} px")
 
     params = dict(
         ref_round=ref_round,
@@ -567,36 +607,37 @@ def step03_register_rounds(
     )
 
     result: Dict = {
-        'rounds': {
+        "rounds": {
             ref_round: {
-                'channels': ref_ch,
-                'dapi': ref_dapi,
-                'transform': np.eye(2, 3, dtype=np.float64),
-                'inliers': 0,
-                'matches': 0,
-                'registered': True,
-                'status': 'reference',
-                'mov_shape': ref_shape,
-                'czi_path': czis[ref_round],
-                'czi_size_bytes': os.path.getsize(czis[ref_round]),
+                "channels": ref_ch,
+                "dapi": ref_dapi,
+                "transform": np.eye(2, 3, dtype=np.float64),
+                "inliers": 0,
+                "matches": 0,
+                "registered": True,
+                "status": "reference",
+                "mov_shape": ref_shape,
+                "czi_path": czis[ref_round],
+                "czi_size_bytes": os.path.getsize(czis[ref_round]),
             }
         },
-        'reference_shape': ref_shape,
-        'round_order': rounds,
-        'pixel_size_um': pixel_size_um,
-        'params': params,
+        "reference_shape": ref_shape,
+        "round_order": rounds,
+        "pixel_size_um": pixel_size_um,
+        "params": params,
     }
 
     for rnd in nonref_rounds:
         if verbose:
-            print(f'Registering {rnd}...')
+            print(f"Registering {rnd}...")
         mov_ch = read_czi_all_channels(czis[rnd], num_channels, scale_factor)
         mov_dapi = mov_ch[dapi_channel]
         if verbose:
-            print(f'  Mosaic shape: {mov_dapi.shape[0]} x {mov_dapi.shape[1]} px')
+            print(f"  Mosaic shape: {mov_dapi.shape[0]} x {mov_dapi.shape[1]} px")
 
         transform, n_inliers, n_matches, status = register_round_pair(
-            ref_dapi, mov_dapi,
+            ref_dapi,
+            mov_dapi,
             n_features=config.n_features,
             flann_checks=config.flann_checks,
             lowe_ratio=config.lowe_ratio,
@@ -610,18 +651,18 @@ def step03_register_rounds(
 
         if transform is None:
             if verbose:
-                print(f'  FAILED — {status}')
-            result['rounds'][rnd] = {
-                'channels': None,
-                'dapi': None,
-                'transform': None,
-                'inliers': 0,
-                'matches': n_matches,
-                'registered': False,
-                'status': status,
-                'mov_shape': mov_dapi.shape,
-                'czi_path': czis[rnd],
-                'czi_size_bytes': os.path.getsize(czis[rnd]),
+                print(f"  FAILED — {status}")
+            result["rounds"][rnd] = {
+                "channels": None,
+                "dapi": None,
+                "transform": None,
+                "inliers": 0,
+                "matches": n_matches,
+                "registered": False,
+                "status": status,
+                "mov_shape": mov_dapi.shape,
+                "czi_path": czis[rnd],
+                "czi_size_bytes": os.path.getsize(czis[rnd]),
             }
             continue
 
@@ -630,9 +671,9 @@ def step03_register_rounds(
             angle = float(np.degrees(np.arctan2(transform[0, 1], transform[0, 0])))
             rate = 100.0 * n_inliers / n_matches if n_matches else 0.0
             print(
-                f'  {n_inliers}/{n_matches} inliers ({rate:.1f}%)  '
-                f'angle={angle:+.2f}deg  scale={scale:.4f}  '
-                f'tx={transform[0,2]:+.1f}  ty={transform[1,2]:+.1f} px'
+                f"  {n_inliers}/{n_matches} inliers ({rate:.1f}%)  "
+                f"angle={angle:+.2f}deg  scale={scale:.4f}  "
+                f"tx={transform[0,2]:+.1f}  ty={transform[1,2]:+.1f} px"
             )
 
         warped = np.stack(
@@ -640,41 +681,168 @@ def step03_register_rounds(
             axis=0,
         )
 
-        result['rounds'][rnd] = {
-            'channels': warped,
-            'dapi': warped[dapi_channel],
-            'transform': transform,
-            'inliers': n_inliers,
-            'matches': n_matches,
-            'registered': True,
-            'status': status,
-            'mov_shape': mov_dapi.shape,
-            'czi_path': czis[rnd],
-            'czi_size_bytes': os.path.getsize(czis[rnd]),
+        result["rounds"][rnd] = {
+            "channels": warped,
+            "dapi": warped[dapi_channel],
+            "transform": transform,
+            "inliers": n_inliers,
+            "matches": n_matches,
+            "registered": True,
+            "status": status,
+            "mov_shape": mov_dapi.shape,
+            "czi_path": czis[rnd],
+            "czi_size_bytes": os.path.getsize(czis[rnd]),
         }
 
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
         for rnd in rounds:
-            rd = result['rounds'].get(rnd)
-            if rd and rd.get('channels') is not None:
-                p = os.path.join(output_dir, f'{rnd}_registered.tif')
-                tifffile.imwrite(p, rd['channels'].astype(np.uint16))
+            rd = result["rounds"].get(rnd)
+            if rd and rd.get("channels") is not None:
+                p = os.path.join(output_dir, f"{rnd}_registered.tif")
+                tifffile.imwrite(p, rd["channels"].astype(np.uint16))
                 if verbose:
-                    print(f'  Saved: {os.path.basename(p)}')
+                    print(f"  Saved: {os.path.basename(p)}")
 
     if verbose:
-        print('\n' + '=' * 60)
-        print('Registration summary:')
+        print("\n" + "=" * 60)
+        print("Registration summary:")
         for rnd in rounds:
-            rd = result['rounds'][rnd]
-            if rd['status'] == 'reference':
-                print(f'  {rnd:6s}  REFERENCE  {ref_shape[0]}x{ref_shape[1]} px')
-            elif rd['registered']:
-                rate = 100.0 * rd['inliers'] / rd['matches'] if rd['matches'] else 0
-                print(f'  {rnd:6s}  OK         {rd["inliers"]}/{rd["matches"]} inliers ({rate:.1f}%)')
+            rd = result["rounds"][rnd]
+            if rd["status"] == "reference":
+                print(f"  {rnd:6s}  REFERENCE  {ref_shape[0]}x{ref_shape[1]} px")
+            elif rd["registered"]:
+                rate = 100.0 * rd["inliers"] / rd["matches"] if rd["matches"] else 0
+                print(
+                    f'  {rnd:6s}  OK         {rd["inliers"]}/{rd["matches"]} inliers ({rate:.1f}%)'
+                )
             else:
                 print(f'  {rnd:6s}  FAILED     {rd["status"]}')
-        print('=' * 60)
+        print("=" * 60)
 
     return result
+
+
+def register_he_to_fluorescence(
+    he_image: np.ndarray,
+    fluor_image: np.ndarray,
+    he_scale_to_fluor: float = 1.0,
+    search_radius: int = 100,
+    pyramid_scales: Sequence[int] = (8, 4, 2, 1),
+    high_pass_sigma: float = 18.0,
+) -> Dict:
+    """Register brightfield H&E image to a fluorescent reference channel (e.g. DAPI).
+
+    Ported and generalized from DAS_v2 (register_HE_Cycif_v6): converts H&E nuclear
+    absorbance into high-pass inverted contrast textures matching nuclear fluorescence,
+    then executes multi-scale coarse-to-fine spatial translation search.
+
+    Args:
+        he_image: Brightfield H&E image (H, W, 3) RGB or (H, W) grayscale.
+        fluor_image: Fluorescent reference image (H, W) (e.g. DAPI).
+        he_scale_to_fluor: Relative pixel resolution scale factor (fluor_px / he_px).
+        search_radius: Maximum translation search radius in pixels at coarse scale.
+        pyramid_scales: Sequence of downsample scales from coarse to fine.
+        high_pass_sigma: Gaussian sigma for H&E high-pass texture extraction.
+
+    Returns:
+        Dict containing {"warped_he", "tx", "ty", "correlation_score", "status"}.
+    """
+    from scipy import ndimage
+    from skimage.transform import rescale, resize
+
+    # Convert H&E to grayscale absorbance
+    if he_image.ndim == 3 and he_image.shape[2] >= 3:
+        # Optical density or green/blue inverted channel
+        he_gray = (
+            0.2989 * he_image[..., 0]
+            + 0.5870 * he_image[..., 1]
+            + 0.1140 * he_image[..., 2]
+        )
+    else:
+        he_gray = np.squeeze(he_image).astype(float)
+
+    # Scale H&E to match fluorescence spatial resolution if needed
+    if he_scale_to_fluor != 1.0:
+        he_gray = rescale(
+            he_gray, he_scale_to_fluor, preserve_range=True, anti_aliasing=True
+        )
+
+    fluor_gray = np.squeeze(fluor_image).astype(float)
+
+    # Crop / pad to common canvas if needed
+    target_h, target_w = fluor_gray.shape
+
+    # 1. High-pass filter H&E to extract nuclear textures and invert (dark nuclei -> bright)
+    he_blur = ndimage.gaussian_filter(he_gray, sigma=high_pass_sigma)
+    he_texture = np.clip(he_blur - he_gray, 0.0, None)  # bright nuclei signal
+
+    # Smooth fluorescence slightly
+    fluor_texture = ndimage.gaussian_filter(fluor_gray, sigma=1.5)
+
+    # 2. Multi-scale coarse-to-fine translation search
+    tx, ty = 0.0, 0.0
+    best_corr = -1.0
+
+    for scale in pyramid_scales:
+        if scale > 1:
+            sh = max(target_h // scale, 16)
+            sw = max(target_w // scale, 16)
+            he_sub = resize(he_texture, (sh, sw), order=1, preserve_range=True)
+            fl_sub = resize(fluor_texture, (sh, sw), order=1, preserve_range=True)
+        else:
+            he_sub = he_texture
+            fl_sub = fluor_texture
+
+        # Normalize signals
+        he_sub = (he_sub - np.mean(he_sub)) / (np.std(he_sub) + 1e-6)
+        fl_sub = (fl_sub - np.mean(fl_sub)) / (np.std(fl_sub) + 1e-6)
+
+        rad = max(search_radius // scale, 2)
+        curr_tx_sub = int(round(tx / scale))
+        curr_ty_sub = int(round(ty / scale))
+
+        best_sub_corr = -1.0
+        best_dx, best_dy = 0, 0
+
+        for dy in range(-rad, rad + 1):
+            for dx in range(-rad, rad + 1):
+                cand_tx = curr_tx_sub + dx
+                cand_ty = curr_ty_sub + dy
+                shifted_he = ndimage.shift(
+                    he_sub, shift=(cand_ty, cand_tx), order=0, cval=0.0
+                )
+                corr = np.mean(shifted_he * fl_sub)
+                if corr > best_sub_corr:
+                    best_sub_corr = corr
+                    best_dx = dx
+                    best_dy = dy
+
+        tx = (curr_tx_sub + best_dx) * scale
+        ty = (curr_ty_sub + best_dy) * scale
+        best_corr = best_sub_corr
+
+    # Warp full H&E image
+    if he_image.ndim == 3:
+        warped_channels = []
+        for c in range(he_image.shape[2]):
+            ch = he_image[..., c].astype(float)
+            if he_scale_to_fluor != 1.0:
+                ch = rescale(
+                    ch, he_scale_to_fluor, preserve_range=True, anti_aliasing=True
+                )
+            warped_c = ndimage.shift(ch, shift=(ty, tx), order=1, cval=255.0)
+            warped_channels.append(warped_c)
+        warped_he = np.stack(warped_channels, axis=-1).astype(he_image.dtype)
+    else:
+        warped_he = ndimage.shift(he_gray, shift=(ty, tx), order=1, cval=255.0).astype(
+            he_image.dtype
+        )
+
+    return {
+        "warped_he": warped_he,
+        "tx": float(tx),
+        "ty": float(ty),
+        "correlation_score": float(np.round(best_corr, 4)),
+        "status": "ok",
+    }

@@ -2,9 +2,15 @@
 
 import numpy as np
 import pandas as pd
-from spatial_omics_toolkit.analysis.cycif_qc import calculate_marker_snr, filter_background_signal
+from spatial_omics_toolkit.analysis.cycif_qc import (
+    calculate_marker_snr,
+    filter_background_signal,
+)
 from spatial_omics_toolkit.analysis.segmentation import compute_cell_centroids
-from spatial_omics_toolkit.analysis.spatial_ml import compute_tissue_masked_gini, compute_spatial_neighborhood_graph
+from spatial_omics_toolkit.analysis.spatial_ml import (
+    compute_tissue_masked_gini,
+    compute_spatial_neighborhood_graph,
+)
 
 
 def test_cycif_marker_snr_and_filter():

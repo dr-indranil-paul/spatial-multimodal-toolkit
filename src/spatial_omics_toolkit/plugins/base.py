@@ -23,7 +23,9 @@ class PluginInterface(ABC):
         pass
 
     @abstractmethod
-    def validate_intake(self, manifest: IntakeManifest) -> Tuple[bool, List[StructuredErrorResponse]]:
+    def validate_intake(
+        self, manifest: IntakeManifest
+    ) -> Tuple[bool, List[StructuredErrorResponse]]:
         """Validate assay-specific intake manifest parameters and files."""
         pass
 

@@ -36,7 +36,11 @@ run interactively in a notebook.
 """
 
 from spatial_omics_toolkit.cycif.aggregate import step09_aggregate_per_core
-from spatial_omics_toolkit.cycif.classify import step07_classify_cells, step08_score_programs, zscore_per_core
+from spatial_omics_toolkit.cycif.classify import (
+    step07_classify_cells,
+    step08_score_programs,
+    zscore_per_core,
+)
 from spatial_omics_toolkit.cycif.compare import step12_compare_groups
 from spatial_omics_toolkit.cycif.config import (
     CellTypeMarkerConfig,
@@ -62,7 +66,10 @@ from spatial_omics_toolkit.cycif.intake import step01_scan_intake
 from spatial_omics_toolkit.cycif.pseudobulk import step13_pseudobulk
 from spatial_omics_toolkit.cycif.qc import step06_qc_filter_intensities
 from spatial_omics_toolkit.cycif.register import step03_register_rounds
-from spatial_omics_toolkit.cycif.segment import bridge_mcmicro_to_pipex, step05_segment_cells
+from spatial_omics_toolkit.cycif.segment import (
+    bridge_mcmicro_to_pipex,
+    step05_segment_cells,
+)
 from spatial_omics_toolkit.cycif.spatial_features import step10_spatial_features
 from spatial_omics_toolkit.cycif.spatial_null import step11_spatial_null
 

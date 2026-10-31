@@ -1,9 +1,12 @@
 # SpatialOmics Toolkit: Architecture and Skill Design
 
-**Status:** Approved for implementation (Red Team Hardened)  
+**Status:** Historical architecture proposal; not the current app implementation contract. See `README.md` and `02_projects_current/02_spatial_proteomics/01_documents/multimodal_spatial_workflow_discussion.md` for current scope and decisions.  
 **Owner:** Dr. Indranil Paul  
 **Target:** Institute-grade spatial and single-cell multiomics analytics service  
 **Working version:** 0.1.0  
+
+**Current app-suite note (2026-10-30):** The implementation now targets CycIF, HS, FLIM, H&E, and Visium, with PLA excluded from the app. The app uses a single-user Streamlit interface and one guarded Python worker job submitted directly to SLURM; the older FastAPI, multi-user service, Nextflow orchestration, tiled web viewer, and generic integration architecture below remain aspirational unless separately re-approved and implemented. Do not treat the historical capability statements in this design as shipped or qualified functionality.
+
 **Work note (2026-08-06):** Approved direction incorporating Red Team audit hardening:
 native Python core, Streamlit UI with tiled spatial rendering, FastAPI production job service,
 SLURM-wrapped Nextflow DSL2 orchestration, Python-side pseudobulk pre-aggregation prior to containerized
@@ -196,7 +199,6 @@ qualified incrementally behind stable contracts.
 |   `-- performance/
 |-- fixtures/                 # tiny non-biological golden fixtures
 |-- docs/
-|-- .agents/skills/spatial-omics-toolkit/SKILL.md
 |-- CHANGELOG.md
 |-- CITATION.cff
 |-- CONTRIBUTING.md
@@ -400,7 +402,7 @@ Each plugin publishes intended use, prohibited use, versions, references,
 fixtures, truth limitations, metrics, acceptance criteria, failure behavior,
 fallbacks, and change-impact rules.
 
-## 12. Project Skill
+## 12. Canonical Skill
 
 ### Name
 
@@ -408,9 +410,11 @@ fallbacks, and change-impact rules.
 
 ### Install location
 
-Project-local custom path:
+Central skill library:
 
-`02_spatial_toolkit/.agents/skills/spatial-omics-toolkit/SKILL.md`
+`/home/groups/EmiliLab/pauli/pauli_home/ai-research-companion/skills/agent_skills/life-sciences/spatial-omics-toolkit/SKILL.md`
+
+Use this canonical skill directly; keep project setup and facts in the project README or wiki.
 
 ### Purpose
 
@@ -561,7 +565,7 @@ Implementation is authorized with the following Red Team hardened specifications
 1. **Python Core + Streamlit UI + Nextflow DSL2 Architecture**: Native Python platform with qualified containerized R statistical stages executing over pseudobulk matrices.
 2. **SLURM-Wrapped Master Process Execution**: Nextflow controllers submit as single-core SLURM batch jobs; all scratch paths reside under `/home/groups/EmiliLab/pauli/`.
 3. **Gigapixel Visual Infrastructure**: Pyramidal OME-Zarr viewer & server-side datashader rendering in Streamlit.
-4. **Project Skill Scaffolding**: Project-local `spatial-omics-toolkit` skill.
+4. **Canonical Skill Routing**: Use the central `life-sciences/spatial-omics-toolkit` skill.
 5. **Version 0.1 Plugin Scope**: First qualified plugins for scRNA, Visium, and Xenium using channel-agnostic multiomics schemas.
 6. **Downloadable Warning-State Bundles**: Visibly noncanonical automatic-fallback bundles tagged with explicit claim restrictions.
 7. **Agent-Native APIs**: Machine-readable error taxonomies and schema export endpoints (`spatial-omics schema`).

@@ -18,7 +18,9 @@ class SpatialProteomicsPlugin(PluginInterface):
     def version(self) -> str:
         return "0.1.0"
 
-    def validate_intake(self, manifest: IntakeManifest) -> Tuple[bool, List[StructuredErrorResponse]]:
+    def validate_intake(
+        self, manifest: IntakeManifest
+    ) -> Tuple[bool, List[StructuredErrorResponse]]:
         """Validate intake manifest for spatial proteomics deliveries."""
         errors: List[StructuredErrorResponse] = []
 
@@ -28,7 +30,7 @@ class SpatialProteomicsPlugin(PluginInterface):
                     error_code=ErrorCode.INVALID_MANIFEST,
                     reason=f"Modality '{manifest.modality.value}' is not supported by spatial_proteomics plugin.",
                     remediation_hint="Set manifest modality to 'spatial_proteomics'.",
-                    context={"modality": manifest.modality.value}
+                    context={"modality": manifest.modality.value},
                 )
             )
 
@@ -39,7 +41,9 @@ class SpatialProteomicsPlugin(PluginInterface):
                     error_code=ErrorCode.INVALID_MANIFEST,
                     reason="Feature type 'protein' is required for spatial proteomics analysis.",
                     remediation_hint="Add 'protein' to manifest feature_types list.",
-                    context={"feature_types": [f.value for f in manifest.feature_types]}
+                    context={
+                        "feature_types": [f.value for f in manifest.feature_types]
+                    },
                 )
             )
 
@@ -58,7 +62,7 @@ class SpatialProteomicsPlugin(PluginInterface):
                 "tissue_mask_spatial_gsi_null",
                 "pseudobulk_sample_aggregation",
                 "risk_stratification_differential",
-                "ome_zarr_pyramidal_tiling"
+                "ome_zarr_pyramidal_tiling",
             ],
-            "nextflow_process": "SPATIAL_PROTEOMICS_WORKFLOW"
+            "nextflow_process": "SPATIAL_PROTEOMICS_WORKFLOW",
         }

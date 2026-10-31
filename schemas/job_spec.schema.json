@@ -86,7 +86,7 @@
       "type": "object"
     },
     "output_dir": {
-      "description": "Output directory path beneath /home/groups/EmiliLab/pauli/",
+      "description": "Output directory path beneath the platform workspace root (/home/groups/EmiliLab/pauli/ on Windows, /home/groups/EmiliLab/pauli/ on HPC)",
       "title": "Output Dir",
       "type": "string"
     }

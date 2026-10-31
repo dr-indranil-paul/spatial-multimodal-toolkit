@@ -38,7 +38,10 @@ from spatial_omics_toolkit.cycif.register import (
 # Synthetic image fixture
 # ---------------------------------------------------------------------------
 
-def _make_synthetic_dapi(rng: np.random.RandomState, shape=(512, 512), n_blobs=180) -> np.ndarray:
+
+def _make_synthetic_dapi(
+    rng: np.random.RandomState, shape=(512, 512), n_blobs=180
+) -> np.ndarray:
     """Build a synthetic 'nuclei-like' image: Gaussian blobs + background noise.
 
     Not a real DAPI image — a stand-in with SIFT-detectable local structure,
@@ -47,13 +50,13 @@ def _make_synthetic_dapi(rng: np.random.RandomState, shape=(512, 512), n_blobs=1
     call time from ``rng``, never hardcoded.
     """
     img = np.zeros(shape, dtype=np.float32)
-    yy, xx = np.mgrid[0:shape[0], 0:shape[1]]
+    yy, xx = np.mgrid[0 : shape[0], 0 : shape[1]]
     ys = rng.uniform(40, shape[0] - 40, n_blobs)
     xs = rng.uniform(40, shape[1] - 40, n_blobs)
     radii = rng.uniform(3.0, 8.0, n_blobs)
     amps = rng.uniform(2000.0, 8000.0, n_blobs)
     for y, x, r, a in zip(ys, xs, radii, amps):
-        img += a * np.exp(-(((yy - y) ** 2 + (xx - x) ** 2) / (2.0 * r ** 2)))
+        img += a * np.exp(-(((yy - y) ** 2 + (xx - x) ** 2) / (2.0 * r**2)))
     img += rng.normal(0.0, 25.0, shape).astype(np.float32)
     img = np.clip(img, 0, 65535)
     return img.astype(np.uint16)
@@ -90,11 +93,14 @@ class TestRegisterRoundPairSyntheticData:
         # ref_dapi is mov_dapi warped by the known moving->reference transform,
         # using the same warpAffine call pattern step03_register_rounds itself
         # uses (warp_image), so the recovered transform is directly comparable.
-        self.ref_dapi = warp_image(self.mov_dapi, self.t_true, self.shape).astype(np.uint16)
+        self.ref_dapi = warp_image(self.mov_dapi, self.t_true, self.shape).astype(
+            np.uint16
+        )
 
     def test_recovers_known_transform(self):
         transform, n_inliers, n_matches, status = register_round_pair(
-            self.ref_dapi, self.mov_dapi,
+            self.ref_dapi,
+            self.mov_dapi,
         )
 
         assert status == "ok", f"registration failed unexpectedly: {status}"
@@ -132,7 +138,9 @@ class TestRegisterRoundPairSyntheticData:
         a = self.ref_dapi[margin:-margin, margin:-margin].astype(np.float64)
         b = warped[margin:-margin, margin:-margin].astype(np.float64)
         corr = float(np.corrcoef(a.ravel(), b.ravel())[0, 1])
-        assert corr > 0.9, f"warped moving image poorly correlated with reference (r={corr:.3f})"
+        assert (
+            corr > 0.9
+        ), f"warped moving image poorly correlated with reference (r={corr:.3f})"
 
     def test_uncorrelated_images_fail_loudly_not_silently(self):
         """Two independent noise fields share no real structure: registration
@@ -144,7 +152,8 @@ class TestRegisterRoundPairSyntheticData:
         img_b = _make_synthetic_dapi(rng2, (256, 256), n_blobs=40)
 
         transform, n_inliers, n_matches, status = register_round_pair(
-            img_a, img_b,
+            img_a,
+            img_b,
             ransac_confidence=0.999,
             ransac_threshold=1.0,
         )
@@ -173,7 +182,9 @@ class TestValidateTransformSanityBounds:
 
     def test_excessive_rotation_is_rejected(self):
         angle = np.radians(30.0)  # far beyond default max_angle_deg=5
-        bad = np.array([[np.cos(angle), -np.sin(angle), 0.0], [np.sin(angle), np.cos(angle), 0.0]])
+        bad = np.array(
+            [[np.cos(angle), -np.sin(angle), 0.0], [np.sin(angle), np.cos(angle), 0.0]]
+        )
         valid, reason = _validate_transform(bad, (512, 512), max_angle_deg=5.0)
         assert not valid
         assert "angle" in reason
@@ -194,6 +205,7 @@ class TestValidateTransformSanityBounds:
 # ---------------------------------------------------------------------------
 # Filename parsing / round ordering
 # ---------------------------------------------------------------------------
+
 
 class TestRoundSortKey:
     def test_numeric_aware_sort_beats_alphabetical(self):
@@ -221,7 +233,9 @@ class TestRoundSortKey:
         """A non-hBE-TMA round-naming convention is a parameter, not a code change."""
         labels = ["Cycle10", "Cycle2", "Cycle1"]
         pattern = r"^Cycle(\d+)()$"
-        numeric = sorted(labels, key=lambda l: _round_sort_key(l, round_label_pattern=pattern))
+        numeric = sorted(
+            labels, key=lambda l: _round_sort_key(l, round_label_pattern=pattern)
+        )
         assert numeric == ["Cycle1", "Cycle2", "Cycle10"]
 
 
@@ -250,12 +264,7 @@ class TestParseCziFilename:
     def test_custom_pattern_is_a_parameter_not_a_code_change(self):
         fname = "cycle03_someOtherLab_sceneZ9.czi"
         pattern = (
-            r"^cycle(\d+)_"
-            r"([A-Za-z]+)_"
-            r"()"
-            r"()"
-            r"()"
-            r"(scene[A-Z]\d+)\.czi$"
+            r"^cycle(\d+)_" r"([A-Za-z]+)_" r"()" r"()" r"()" r"(scene[A-Z]\d+)\.czi$"
         )
         info = parse_czi_filename(fname, pattern=pattern)
         assert info is not None
@@ -286,6 +295,7 @@ class TestGroupCzisByScene(object):
 # ---------------------------------------------------------------------------
 # step03_register_rounds — structural checks that don't need real CZI files
 # ---------------------------------------------------------------------------
+
 
 class TestStep03RegisterRoundsStructural:
     def test_missing_reference_round_raises(self):

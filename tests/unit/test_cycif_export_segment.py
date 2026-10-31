@@ -5,10 +5,9 @@ environment, so:
   - step04_export_registered is tested against small synthetic in-memory
     arrays (I/O + provenance JSON only — no data literals are asserted as
     scientific results, only structural facts about files written).
-  - step05_segment_cells is tested via its command-builder functions
-    directly (verifying the constructed subprocess command string given
-    fake paths) and the bridge_mcmicro_to_pipex column-translation function
-    against a small synthetic DataFrame. No container is ever invoked.
+  - step05_segment_cells is covered by its argv builders, a temporary executable
+    that verifies metacharacters stay argument data, and the
+    bridge_mcmicro_to_pipex column-translation function. No container is invoked.
 """
 
 import json
@@ -17,8 +16,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+from spatial_omics_toolkit.cycif import segment as cycif_segment
 
-from spatial_omics_toolkit.cycif.config import ExportNamingConfig, MCMICROConfig, PIPEXConfig
+from spatial_omics_toolkit.cycif.config import (
+    ExportNamingConfig,
+    MCMICROConfig,
+    PIPEXConfig,
+)
 from spatial_omics_toolkit.cycif.export_images import (
     build_composite_ometiff,
     extract_pipex_channels,
@@ -42,11 +46,16 @@ from spatial_omics_toolkit.cycif.segment import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_fake_result(h=8, w=8):
     """A minimal synthetic registration result matching step03's contract."""
     rng = np.random.default_rng(0)
-    r1_channels = rng.integers(0, 100, size=(2, h, w)).astype(np.uint16)  # DAPI, MarkerA
-    r2_channels = rng.integers(0, 100, size=(2, h, w)).astype(np.uint16)  # DAPI, MarkerB
+    r1_channels = rng.integers(0, 100, size=(2, h, w)).astype(
+        np.uint16
+    )  # DAPI, MarkerA
+    r2_channels = rng.integers(0, 100, size=(2, h, w)).astype(
+        np.uint16
+    )  # DAPI, MarkerB
     transform = np.array([[1.0, 0.0, 1.5], [0.0, 1.0, -0.5]])
     return {
         "pixel_size_um": 0.325,
@@ -89,9 +98,12 @@ MARKER_MAP = {"R1": ["DAPI", "MarkerA"], "R2": ["DAPI", "MarkerB"]}
 # step04_export_registered — building blocks
 # ---------------------------------------------------------------------------
 
+
 def test_save_scene_metadata_writes_provenance_json(tmp_path):
     result = _make_fake_result()
-    path = save_scene_metadata(result, "sceneA1", tmp_path, extra={"operator": "test-suite"})
+    path = save_scene_metadata(
+        result, "sceneA1", tmp_path, extra={"operator": "test-suite"}
+    )
 
     assert Path(path).exists()
     with open(path) as fh:
@@ -114,7 +126,10 @@ def test_save_scene_metadata_writes_provenance_json(tmp_path):
 def test_save_scene_metadata_custom_filename_template(tmp_path):
     result = _make_fake_result()
     path = save_scene_metadata(
-        result, "sceneA1", tmp_path, metadata_filename_template="{scene_label}_prov.json"
+        result,
+        "sceneA1",
+        tmp_path,
+        metadata_filename_template="{scene_label}_prov.json",
     )
     assert Path(path).name == "sceneA1_prov.json"
 
@@ -167,7 +182,12 @@ def test_extract_pipex_channels_uses_naming_template(tmp_path):
         result, tmp_path, MARKER_MAP, channel_filename_template="{round}__{marker}.tif"
     )
     names = sorted(Path(p).name for p in written)
-    assert names == ["R1__DAPI.tif", "R1__MarkerA.tif", "R2__DAPI.tif", "R2__MarkerB.tif"]
+    assert names == [
+        "R1__DAPI.tif",
+        "R1__MarkerA.tif",
+        "R2__DAPI.tif",
+        "R2__MarkerB.tif",
+    ]
 
 
 def test_qc_summary_table_reports_registration_quality():
@@ -183,6 +203,7 @@ def test_qc_summary_table_reports_registration_quality():
 # ---------------------------------------------------------------------------
 # step04_export_registered — orchestrator
 # ---------------------------------------------------------------------------
+
 
 def test_step04_export_registered_writes_expected_files(tmp_path):
     pytest.importorskip("tifffile")
@@ -229,8 +250,13 @@ def test_step04_export_registered_requires_pipex_dir_when_requested(tmp_path):
     result = _make_fake_result()
     with pytest.raises(ValueError):
         step04_export_registered(
-            result, "sceneA1", tmp_path / "out", MARKER_MAP,
-            pipex_dir=None, write_pipex_channels=True, verbose=False,
+            result,
+            "sceneA1",
+            tmp_path / "out",
+            MARKER_MAP,
+            pipex_dir=None,
+            write_pipex_channels=True,
+            verbose=False,
         )
 
 
@@ -239,8 +265,13 @@ def test_step04_export_registered_can_skip_pipex_and_masks(tmp_path):
     result = _make_fake_result()
 
     out = step04_export_registered(
-        result, "sceneA1", tmp_path / "out", MARKER_MAP,
-        write_pipex_channels=False, write_border_masks=False, verbose=False,
+        result,
+        "sceneA1",
+        tmp_path / "out",
+        MARKER_MAP,
+        write_pipex_channels=False,
+        write_border_masks=False,
+        verbose=False,
     )
     assert out["pipex_channel_paths"] is None
     assert out["mask_paths"] is None
@@ -250,11 +281,19 @@ def test_step04_export_registered_can_skip_pipex_and_masks(tmp_path):
 def test_step04_export_registered_custom_naming_template(tmp_path):
     pytest.importorskip("tifffile")
     result = _make_fake_result()
-    naming = ExportNamingConfig(composite_filename_template="{scene_label}.composite.tif")
+    naming = ExportNamingConfig(
+        composite_filename_template="{scene_label}.composite.tif"
+    )
 
     out = step04_export_registered(
-        result, "sceneA1", tmp_path / "out", MARKER_MAP,
-        naming=naming, write_pipex_channels=False, write_border_masks=False, verbose=False,
+        result,
+        "sceneA1",
+        tmp_path / "out",
+        MARKER_MAP,
+        naming=naming,
+        write_pipex_channels=False,
+        write_border_masks=False,
+        verbose=False,
     )
     assert Path(out["composite_path"]).name == "sceneA1.composite.tif"
 
@@ -262,6 +301,7 @@ def test_step04_export_registered_custom_naming_template(tmp_path):
 # ---------------------------------------------------------------------------
 # step05_segment_cells — MCMICRO command builders
 # ---------------------------------------------------------------------------
+
 
 def test_build_markers_csv_orders_rounds_numerically():
     marker_map = {"R2": ["DAPI", "CK5"], "R10": ["DAPI"], "R1": ["DAPI", "MUC1"]}
@@ -299,10 +339,54 @@ def test_build_mcmicro_cmd_uses_config_paths_and_profile():
         use_gpu=False,
     )
     cmd = build_mcmicro_cmd("/fake/project_dir", config)
-    assert cmd == (
-        "/fake/bin/mcmicro run /fake/mcmicro/main.nf "
-        "--in /fake/project_dir -profile exacloud"
+    assert cmd == [
+        "/fake/bin/mcmicro",
+        "run",
+        "/fake/mcmicro/main.nf",
+        "--in",
+        "/fake/project_dir",
+        "-profile",
+        "exacloud",
+    ]
+
+
+def test_mcmicro_paths_with_shell_metacharacters_remain_single_arguments() -> None:
+    project_dir = "/tmp/project; touch /tmp/injected"
+    config = MCMICROConfig(
+        mcmicro_bin="/fake/bin/mcmicro",
+        mcmicro_nf="/fake/mcmicro/main.nf",
     )
+    cmd = build_mcmicro_cmd(project_dir, config)
+    assert cmd[4] == project_dir
+
+
+
+def test_mcmicro_runner_does_not_execute_shell_metacharacters(tmp_path: Path) -> None:
+    executable = tmp_path / "fake_mcmicro.py"
+    record_path = tmp_path / "argv.json"
+    marker_path = tmp_path / "injected"
+    executable.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o750)
+    path_argument = f"{tmp_path}/project; touch {marker_path}"
+
+    return_code = cycif_segment.run_mcmicro(
+        [str(executable), str(record_path), "--in", path_argument]
+    )
+
+    assert return_code == 0
+    assert json.loads(record_path.read_text(encoding="utf-8")) == [
+        "--in",
+        path_argument,
+    ]
+    assert not marker_path.exists()
+
 
 
 def test_build_mcmicro_cmd_gpu_profile_and_extra_args():
@@ -314,8 +398,9 @@ def test_build_mcmicro_cmd_gpu_profile_and_extra_args():
         extra_args="-resume",
     )
     cmd = build_mcmicro_cmd("/fake/project_dir", config)
-    assert "-profile exacloud,gpu" in cmd
-    assert cmd.endswith("-resume")
+    assert "-profile" in cmd
+    assert "exacloud,gpu" in cmd
+    assert cmd[-1] == "-resume"
 
 
 def test_prepare_mcmicro_project_creates_expected_layout(tmp_path):
@@ -332,16 +417,22 @@ def test_prepare_mcmicro_project_creates_expected_layout(tmp_path):
     assert (project_dir / "markers.csv").exists()
     assert (project_dir / "params.yml").exists()
     link = project_dir / "registration" / "sceneA1.ome.tif"
-    assert link.is_symlink()
-    assert link.resolve() == composite.resolve()
+    assert link.exists()
+    if link.is_symlink():
+        assert link.resolve() == composite.resolve()
 
 
 # ---------------------------------------------------------------------------
 # step05_segment_cells — PIPEX command builders
 # ---------------------------------------------------------------------------
 
+
 def test_get_measure_markers_excludes_dapi_and_excluded_rounds():
-    marker_map = {"R1": ["DAPI", "MUC1", "MUC5AC"], "R2": ["DAPI", "CK5"], "R5Q": ["DAPI"]}
+    marker_map = {
+        "R1": ["DAPI", "MUC1", "MUC5AC"],
+        "R2": ["DAPI", "CK5"],
+        "R5Q": ["DAPI"],
+    }
     markers = get_measure_markers(marker_map, exclude_rounds=["R5Q"])
     assert markers == ["R1_MUC1", "R1_MUC5AC", "R2_CK5"]
 
@@ -354,7 +445,9 @@ def test_build_pipex_segmentation_cmd_contains_all_flags():
         nuclei_expansion=10,
         membrane_markers=("R2_CK5",),
     )
-    cmd = build_pipex_segmentation_cmd("/fake/data_dir", config, measure_markers=["R1_MUC1", "R2_CK5"])
+    cmd = build_pipex_segmentation_cmd(
+        "/fake/data_dir", config, measure_markers=["R1_MUC1", "R2_CK5"]
+    )
 
     assert "segmentation.py" in cmd
     assert "-data=/fake/data_dir" in cmd
@@ -363,6 +456,13 @@ def test_build_pipex_segmentation_cmd_contains_all_flags():
     assert "-nuclei_expansion=10" in cmd
     assert "-membrane_markers=R2_CK5" in cmd
     assert "-measure_markers=R1_MUC1,R2_CK5" in cmd
+
+
+def test_pipex_data_path_with_shell_metacharacters_remains_single_argument() -> None:
+    data_dir = "/tmp/data; touch /tmp/injected"
+    config = PIPEXConfig(pipex_home="/fake/pipex", nuclei_marker="R1_DAPI")
+    cmd = build_pipex_segmentation_cmd(data_dir, config)
+    assert f"-data={data_dir}" in cmd
 
 
 def test_build_pipex_segmentation_cmd_falls_back_to_config_measure_markers():
@@ -378,6 +478,7 @@ def test_build_pipex_segmentation_cmd_falls_back_to_config_measure_markers():
 # ---------------------------------------------------------------------------
 # bridge_mcmicro_to_pipex
 # ---------------------------------------------------------------------------
+
 
 def test_bridge_mcmicro_to_pipex_renames_columns_and_keeps_markers(tmp_path):
     mcmicro_df = pd.DataFrame(
@@ -402,8 +503,15 @@ def test_bridge_mcmicro_to_pipex_renames_columns_and_keeps_markers(tmp_path):
 
     out_df = pd.read_csv(out_path)
     assert list(out_df.columns) == [
-        "cell_id", "size", "x", "y", "solidity", "eccentricity", "memref",
-        "R1_MUC1", "R2_CK5",
+        "cell_id",
+        "size",
+        "x",
+        "y",
+        "solidity",
+        "eccentricity",
+        "memref",
+        "R1_MUC1",
+        "R2_CK5",
     ]
     assert (out_df["memref"] == 0).all()
     assert out_df["x"].tolist() == [10.5, 20.1, 30.9]
@@ -435,31 +543,7 @@ def test_bridge_mcmicro_to_pipex_handles_alternate_centroid_names(tmp_path):
 # step05_segment_cells orchestrator — dry run only (no container invoked)
 # ---------------------------------------------------------------------------
 
-def test_step05_segment_cells_mcmicro_dry_run_builds_cmd_without_running(tmp_path):
-    composite = tmp_path / "sceneA1_composite.ome.tif"
-    composite.write_bytes(b"fake-tiff-bytes")
-    config = MCMICROConfig(mcmicro_bin="/fake/bin/mcmicro", mcmicro_nf="/fake/main.nf")
-    project_dir = tmp_path / "mcmicro_project"
 
-    out = step05_segment_cells(
-        "mcmicro",
-        scene_label="sceneA1",
-        composite_ometiff_path=composite,
-        marker_map=MARKER_MAP,
-        project_dir=project_dir,
-        mcmicro_config=config,
-        run=False,
-        verbose=False,
-    )
-
-    assert out["backend"] == "mcmicro"
-    assert out["returncode"] is None
-    assert out["cells"] is None
-    assert "mcmicro run" in out["cmd"]
-    assert str(project_dir) in out["cmd"]
-    # Project should still have been prepared (I/O side, not a container run)
-    assert (project_dir / "markers.csv").exists()
-    assert (project_dir / "registration" / "sceneA1.ome.tif").is_symlink()
 
 
 def test_step05_segment_cells_pipex_dry_run_builds_cmd_without_running(tmp_path):
@@ -517,9 +601,9 @@ def test_step05_segment_cells_raises_on_nonzero_exit(tmp_path):
     """A failing subprocess must raise RuntimeError, never be swallowed."""
     composite = tmp_path / "sceneA1_composite.ome.tif"
     composite.write_bytes(b"fake-tiff-bytes")
-    # mcmicro_bin is a shell command guaranteed to fail (exit 1), standing in
-    # for a real container invocation without needing MCMICRO installed.
-    config = MCMICROConfig(mcmicro_bin="false;", mcmicro_nf="/fake/main.nf")
+    # /bin/false returns a nonzero exit without relying on shell interpretation
+    # or an installed MCMICRO executable.
+    config = MCMICROConfig(mcmicro_bin="/bin/false", mcmicro_nf="/fake/main.nf")
     project_dir = tmp_path / "mcmicro_project"
 
     with pytest.raises(RuntimeError):

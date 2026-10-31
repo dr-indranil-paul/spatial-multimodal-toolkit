@@ -35,4 +35,6 @@ def step13_pseudobulk(
     Returns:
         ``{group_name: samples x features summed count matrix}``.
     """
-    return preaggregate_pseudobulk(expression_df, metadata_df, sample_col=sample_col, group_col=group_col)
+    return preaggregate_pseudobulk(
+        expression_df, metadata_df, sample_col=sample_col, group_col=group_col
+    )

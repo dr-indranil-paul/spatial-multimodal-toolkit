@@ -81,12 +81,23 @@ def step09_aggregate_per_core(
     if type_categories is None:
         type_categories = sorted(df[type_col].dropna().unique().tolist())
     if program_score_cols is None:
-        program_score_cols = [c for c in df.columns if c.endswith("_score") and c != "hybrid_balance"]
+        program_score_cols = [
+            c for c in df.columns if c.endswith("_score") and c != "hybrid_balance"
+        ]
     if marker_cols is None:
         reserved = {core_col, type_col, extra_group_col} | set(program_score_cols)
-        reserved |= {c for c in df.columns if c.startswith("is_") or c.endswith("_z")
-                     or c in ("dominant_program", "hybrid_balance", "program_entropy")}
-        marker_cols = [c for c in df.select_dtypes(include=[np.number]).columns if c not in reserved]
+        reserved |= {
+            c
+            for c in df.columns
+            if c.startswith("is_")
+            or c.endswith("_z")
+            or c in ("dominant_program", "hybrid_balance", "program_entropy")
+        }
+        marker_cols = [
+            c
+            for c in df.select_dtypes(include=[np.number]).columns
+            if c not in reserved
+        ]
 
     rows = []
     for core, grp in df.groupby(core_col):
@@ -120,7 +131,9 @@ def step09_aggregate_per_core(
             row["hybrid_fraction"] = grp[hybrid_flag_col].mean()
             if epithelial_flag_col in grp.columns:
                 epi = grp[grp[epithelial_flag_col]]
-                row["epithelial_hybrid_fraction"] = epi[hybrid_flag_col].mean() if len(epi) else 0.0
+                row["epithelial_hybrid_fraction"] = (
+                    epi[hybrid_flag_col].mean() if len(epi) else 0.0
+                )
         rows.append(row)
 
     result = pd.DataFrame(rows).sort_values(core_col).reset_index(drop=True)
@@ -137,7 +150,9 @@ def step09_aggregate_per_core(
         present_types = [t for t in type_categories if t in result.columns]
         if present_types:
             heat = result.set_index(core_col)[present_types]
-            fig, ax = plt.subplots(figsize=(max(5, 0.4 * len(present_types) + 2), max(4, 0.35 * len(heat))))
+            fig, ax = plt.subplots(
+                figsize=(max(5, 0.4 * len(present_types) + 2), max(4, 0.35 * len(heat)))
+            )
             im = ax.imshow(heat.to_numpy(), aspect="auto", cmap="viridis")
             ax.set_xticks(range(len(present_types)))
             ax.set_xticklabels(present_types, rotation=90, fontsize=7)
@@ -146,6 +161,8 @@ def step09_aggregate_per_core(
             ax.set_title("step09: cell-type fraction per core")
             fig.colorbar(im, ax=ax, label="fraction")
             fig.tight_layout()
-            savefig(fig, out_dir / "step09_core_composition_heatmap.png", verbose=verbose)
+            savefig(
+                fig, out_dir / "step09_core_composition_heatmap.png", verbose=verbose
+            )
 
     return result

@@ -34,12 +34,16 @@ def _finite(value) -> float:
 
 
 def _safe_mean(values) -> float:
-    x = np.asarray(pd.to_numeric(np.asarray(values).reshape(-1), errors="coerce"), dtype=float)
+    x = np.asarray(
+        pd.to_numeric(np.asarray(values).reshape(-1), errors="coerce"), dtype=float
+    )
     return _finite(np.nanmean(x)) if np.isfinite(x).any() else np.nan
 
 
 def _cv(values) -> float:
-    x = np.asarray(pd.to_numeric(np.asarray(values).reshape(-1), errors="coerce"), dtype=float)
+    x = np.asarray(
+        pd.to_numeric(np.asarray(values).reshape(-1), errors="coerce"), dtype=float
+    )
     x = x[np.isfinite(x)]
     return _finite(np.std(x) / np.mean(x)) if len(x) and np.mean(x) != 0 else np.nan
 
@@ -50,7 +54,9 @@ def _gini(values) -> float:
     if not len(x) or np.sum(np.maximum(x, 0)) <= 0:
         return np.nan
     x = np.sort(np.maximum(x, 0))
-    return _finite((2 * np.arange(1, len(x) + 1) - len(x) - 1).dot(x) / (len(x) * x.sum()))
+    return _finite(
+        (2 * np.arange(1, len(x) + 1) - len(x) - 1).dot(x) / (len(x) * x.sum())
+    )
 
 
 def _entropy(probs) -> float:
@@ -84,7 +90,9 @@ def _grid_features(
     out[f"{prefix}.density_cv"] = _cv(dens)
     out[f"{prefix}.density_gini"] = _gini(dens)
     out[f"{prefix}.empty_fraction"] = _finite(np.mean(counts == 0))
-    out[f"{prefix}.density_max_fraction"] = _finite(np.max(counts) / max(np.sum(counts), 1.0))
+    out[f"{prefix}.density_max_fraction"] = _finite(
+        np.max(counts) / max(np.sum(counts), 1.0)
+    )
     rows, weights = [], []
     for b in range(grid * grid):
         m = bid == b
@@ -122,7 +130,12 @@ def _core_features(
     out: Dict[str, float] = {"cell.n_cells": float(len(grp))}
     x = pd.to_numeric(grp.get(x_col), errors="coerce").to_numpy(float)
     y = pd.to_numeric(grp.get(y_col), errors="coerce").to_numpy(float)
-    types = grp.get(type_col, pd.Series("Other", index=grp.index)).fillna("Other").astype(str).to_numpy()
+    types = (
+        grp.get(type_col, pd.Series("Other", index=grp.index))
+        .fillna("Other")
+        .astype(str)
+        .to_numpy()
+    )
     ok = np.isfinite(x) & np.isfinite(y)
     x, y, types = x[ok], y[ok], types[ok]
     n = len(x)
@@ -140,7 +153,9 @@ def _core_features(
 
     for col in morphology_cols:
         if col in grp:
-            out[f"morphology.{col}.median"] = _finite(np.nanmedian(pd.to_numeric(grp[col], errors="coerce")))
+            out[f"morphology.{col}.median"] = _finite(
+                np.nanmedian(pd.to_numeric(grp[col], errors="coerce"))
+            )
             out[f"morphology.{col}.cv"] = _cv(grp[col])
 
     if n < 3:
@@ -186,13 +201,15 @@ def _core_features(
         target_tree = cKDTree(target_pts)
         for k in knn_k_values:
             kk = min(k, n - 1)
-            neigh = tm[indices[src, 1:kk + 1]]
+            neigh = tm[indices[src, 1 : kk + 1]]
             observed = neigh.mean(axis=1)
             expected = (tm.sum() - tm[src].astype(float)) / max(n - 1, 1)
             out[f"{key}.knn{k}.mean"] = _safe_mean(observed)
             out[f"{key}.knn{k}.delta"] = _safe_mean(observed - expected)
         for r in radii:
-            counts = np.asarray(target_tree.query_ball_point(pts[sm], r=r, return_length=True), float)
+            counts = np.asarray(
+                target_tree.query_ball_point(pts[sm], r=r, return_length=True), float
+            )
             out[f"{key}.radius{r:g}.mean"] = _safe_mean(counts)
             out[f"{key}.radius{r:g}.delta"] = _safe_mean(
                 counts / max(np.sum(tm), 1) - (np.pi * r * r) / (width * height)
@@ -209,7 +226,13 @@ def step10_spatial_features(
     type_col: str = "cell_type",
     broad_types: Optional[Sequence[str]] = None,
     spatial_pairs: Optional[Sequence[Tuple[str, str]]] = None,
-    program_cols: Sequence[str] = ("EL_score", "IH_score", "ME_score", "hybrid_balance", "program_entropy"),
+    program_cols: Sequence[str] = (
+        "EL_score",
+        "IH_score",
+        "ME_score",
+        "hybrid_balance",
+        "program_entropy",
+    ),
     morphology_cols: Sequence[str] = ("nuclei_area", "cell_area"),
     grid_sizes: Sequence[int] = (4, 8),
     knn_k_values: Sequence[int] = (5, 10),
@@ -257,7 +280,11 @@ def step10_spatial_features(
         raise ValueError(f"core_col {core_col!r} not found in df.columns")
 
     if broad_types is None:
-        broad_types = sorted(df[type_col].dropna().unique().tolist()) if type_col in df.columns else []
+        broad_types = (
+            sorted(df[type_col].dropna().unique().tolist())
+            if type_col in df.columns
+            else []
+        )
     if spatial_pairs is None:
         spatial_pairs = [(a, b) for a in broad_types for b in broad_types if a != b]
 
@@ -266,8 +293,17 @@ def step10_spatial_features(
     plotted = 0
     for core, grp in df.groupby(core_col):
         feats = _core_features(
-            grp, x_col, y_col, type_col, broad_types, spatial_pairs,
-            program_cols, morphology_cols, grid_sizes, knn_k_values, radii,
+            grp,
+            x_col,
+            y_col,
+            type_col,
+            broad_types,
+            spatial_pairs,
+            program_cols,
+            morphology_cols,
+            grid_sizes,
+            knn_k_values,
+            radii,
         )
         feats[core_col] = core
         rows.append(feats)
@@ -277,7 +313,11 @@ def step10_spatial_features(
 
             x = pd.to_numeric(grp.get(x_col), errors="coerce")
             y = pd.to_numeric(grp.get(y_col), errors="coerce")
-            types = grp.get(type_col, pd.Series("Other", index=grp.index)).fillna("Other").astype(str)
+            types = (
+                grp.get(type_col, pd.Series("Other", index=grp.index))
+                .fillna("Other")
+                .astype(str)
+            )
             fig, ax = plt.subplots(figsize=(6, 6))
             for t in sorted(types.unique()):
                 m = types == t

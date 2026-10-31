@@ -6,11 +6,10 @@ from spatial_omics_toolkit.contracts.status import ErrorCode, StructuredErrorRes
 
 
 def validate_biological_units(
-    specimens: List[BiologicalSpecimen],
-    min_biological_units_per_condition: int = 2
+    specimens: List[BiologicalSpecimen], min_biological_units_per_condition: int = 2
 ) -> Tuple[bool, List[StructuredErrorResponse]]:
     """Validate that specimen hierarchy contains sufficient independent biological units (n).
-    
+
     Prevents pseudoreplication by verifying that distinct biological_unit_ids exist per condition.
     """
     errors: List[StructuredErrorResponse] = []
@@ -31,7 +30,7 @@ def validate_biological_units(
                     error_code=ErrorCode.INSUFFICIENT_BIOLOGICAL_REPLICATES,
                     reason=f"Condition '{cond}' has only {n_units} independent biological unit(s). Minimum required is {min_biological_units_per_condition}.",
                     remediation_hint=f"Add additional biological specimens (patients/cores) for condition '{cond}'. Cells/spots cannot be used as independent replicates.",
-                    context={"condition": cond, "n_units": str(n_units)}
+                    context={"condition": cond, "n_units": str(n_units)},
                 )
             )
 

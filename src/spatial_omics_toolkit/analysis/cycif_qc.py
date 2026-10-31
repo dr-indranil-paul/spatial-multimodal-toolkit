@@ -8,15 +8,15 @@ from typing import Dict, List, Tuple
 def calculate_marker_snr(
     intensity_matrix: pd.DataFrame,
     background_percentile: float = 10.0,
-    signal_percentile: float = 90.0
+    signal_percentile: float = 90.0,
 ) -> Dict[str, float]:
     """Calculate Signal-to-Noise Ratio (SNR) for each marker intensity channel.
-    
+
     Args:
         intensity_matrix: Cells x Markers dataframe of mean fluorescence intensity
         background_percentile: Percentile defining background noise baseline (default 10th)
         signal_percentile: Percentile defining specific staining signal (default 90th)
-        
+
     Returns:
         Dict mapping marker_name -> SNR value (Signal / Background ratio)
     """
@@ -27,10 +27,10 @@ def calculate_marker_snr(
         if len(values) == 0:
             snr_dict[col] = 0.0
             continue
-            
+
         bg = float(np.percentile(values, background_percentile))
         sig = float(np.percentile(values, signal_percentile))
-        
+
         snr = sig / max(bg, 1e-6)
         snr_dict[col] = float(np.round(snr, 3))
 
@@ -38,15 +38,14 @@ def calculate_marker_snr(
 
 
 def filter_background_signal(
-    intensity_matrix: pd.DataFrame,
-    background_thresholds: Dict[str, float]
+    intensity_matrix: pd.DataFrame, background_thresholds: Dict[str, float]
 ) -> pd.DataFrame:
     """Subtract channel-specific background thresholds and floor at zero.
-    
+
     Args:
         intensity_matrix: Cells x Markers dataframe
         background_thresholds: Dict of channel background cutoff values
-        
+
     Returns:
         Cleaned intensity DataFrame with background subtracted
     """

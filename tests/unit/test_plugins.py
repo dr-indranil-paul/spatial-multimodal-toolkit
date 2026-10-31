@@ -58,7 +58,7 @@ def test_spatial_proteomics_execution_plan():
         study_id="PREVAIL_001",
         manifest_path="intake_manifest.json",
         plugin_name="spatial_proteomics",
-        output_dir="/home/groups/EmiliLab/pauli/run_123",
+        output_dir="/home/groups/EmiliLab/pauli/scratch/work/run_123",
     )
     plan = plugin.plan_execution(job)
     assert plan["plugin"] == "spatial_proteomics"
@@ -71,7 +71,7 @@ def test_prevail_barretts_cycif_manifest_fixture():
     from pathlib import Path
     from spatial_omics_toolkit.io.manifest import load_and_validate_manifest
 
-    fixture_path = Path("fixtures/prevail_barretts_cycif_manifest.json")
+    fixture_path = Path(__file__).resolve().parents[2] / "fixtures" / "prevail_barretts_cycif_manifest.json"
     manifest, errors = load_and_validate_manifest(fixture_path)
     assert manifest is not None
     assert manifest.study_id == "PREVAIL_BARRETTS_ESOPHAGUS"

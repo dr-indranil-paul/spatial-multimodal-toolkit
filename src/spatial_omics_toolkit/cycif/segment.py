@@ -4,7 +4,7 @@ Ported and generalized from
 ``02_spatial_proteomics/03_analysis/02_scripts/mcmicro.py`` (MCMICRO backend:
 containerized, CellPose-based, SLURM/Nextflow-native) and
 ``02_spatial_proteomics/03_analysis/02_scripts/pipex.py`` (PIPEX backend:
-StarDist-based, runs in-process). The two source scripts implemented
+StarDist-based subprocess launched by this module). The two source scripts implemented
 interchangeable segmentation backends producing structurally comparable
 per-cell tables; this module exposes both through one step function,
 :func:`step05_segment_cells`, selected via ``backend="mcmicro"`` or
@@ -27,37 +27,39 @@ What changed to generalize it
   renames the fixed, tool-defined columns (``CellID``, ``X_centroid``, ...)
   that MCQuant/PIPEX themselves define; the marker columns it passes
   through are supplied by the caller via ``analysis_markers``.
-- The **fail-loudly, no-silent-fallback command-builder pattern is
-  preserved exactly**: ``build_*_cmd`` constructs a command string,
-  ``subprocess.run`` executes it, and a non-zero exit code raises
-  ``RuntimeError`` immediately. If MCMICRO fails, this module does not
-  retry with PIPEX and report the same result — the caller gets a raised
-  exception naming the failed backend and exact command, and any
-  substitution has to be an explicit, separate, visibly-labeled call
-  (mirrors DESIGN.md §7's fallback policy: a substitution is never silently
-  treated as an equivalent result).
+- The fail-loudly, no-silent-fallback command-builder pattern is
+  preserved without a shell: ``build_*_cmd`` returns an argv list,
+  ``subprocess.run(..., shell=False)`` executes it, and a non-zero exit code
+  raises ``RuntimeError`` immediately. MCMICRO paths, PIPEX paths, and extra
+  options are passed as arguments rather than shell-interpreted text. If
+  MCMICRO fails, this module does not retry with PIPEX and report the same
+  result — the caller gets a raised exception naming the failed backend and
+  rendered argv, and any substitution has to be an explicit, separate,
+  visibly-labeled call (mirrors DESIGN.md §7's fallback policy: a
+  substitution is never silently treated as an equivalent result).
 
 HPC / SLURM requirement
 ------------------------
 Both backends can process a gigapixel composite image, and MCMICRO drives a
 containerized Nextflow pipeline. Per this lab's HPC policy, that work is
 compute-heavy and must run under a SLURM allocation — **never on a login
-node**. This module's job is to build the correct command and manage I/O; it
-does not enforce SLURM itself (it cannot detect a login node from inside a
-Python process reliably). A notebook user must call
+node**. This module's job is to build argv and manage I/O; it does not enforce
+SLURM itself (it cannot detect a login node from inside a Python process
+reliably). A notebook user must call
 ``step05_segment_cells(..., run=True)`` from *within* an interactive
 ``srun`` session or an ``sbatch`` batch job, not from a login-node Jupyter
-kernel. Use ``run=False`` to build and inspect the command without
-executing it (e.g. to hand off to a separate ``sbatch`` script).
+kernel. Use ``run=False`` to build and inspect the argv without executing it
+(e.g. to hand it off to a separate worker).
 """
 
 import logging
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import pandas as pd
 
@@ -71,6 +73,7 @@ PathLike = Union[str, Path]
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _round_sort_key(label: str):
     """Sort round labels in biological order: R1 < R2 < ... < R5 < R5Q.
@@ -87,18 +90,17 @@ def _round_sort_key(label: str):
     return (999, 0)
 
 
-def _run_subprocess(cmd: str, backend_name: str, cwd: Optional[PathLike] = None, timeout: int = 14400) -> int:
-    """Execute a command via subprocess; raise RuntimeError on non-zero exit.
-
-    Shared fail-loudly runner for both backends — preserves
-    ``run_mcmicro`` / ``run_pipex_cmd``'s behavior exactly: log the command,
-    run it, and raise immediately on failure so a notebook stops rather than
-    silently proceeding to load missing/stale segmentation output.
-    """
-    logger.info(f"  [{backend_name}] CMD: {cmd}")
-    result = subprocess.run(cmd, shell=True, cwd=str(cwd) if cwd else None, timeout=timeout)
+def _run_subprocess(
+    cmd: Sequence[str], backend_name: str, cwd: Optional[PathLike] = None, timeout: int = 14400
+) -> int:
+    """Execute an argv command without invoking a shell."""
+    rendered_cmd = shlex.join([str(arg) for arg in cmd])
+    logger.info(f"  [{backend_name}] CMD: {rendered_cmd}")
+    result = subprocess.run(
+        [str(arg) for arg in cmd], shell=False, cwd=str(cwd) if cwd else None, timeout=timeout
+    )
     if result.returncode != 0:
-        msg = f"{backend_name} exited with code {result.returncode}.\nCMD: {cmd}"
+        msg = f"{backend_name} exited with code {result.returncode}.\nCMD: {rendered_cmd}"
         if cwd:
             msg += f"\nWorking dir: {cwd}"
         raise RuntimeError(msg)
@@ -108,6 +110,7 @@ def _run_subprocess(cmd: str, backend_name: str, cwd: Optional[PathLike] = None,
 # ---------------------------------------------------------------------------
 # MCMICRO backend
 # ---------------------------------------------------------------------------
+
 
 def build_markers_csv(marker_map: Dict[str, List[str]]) -> str:
     """Generate MCMICRO ``markers.csv`` content from a project marker map.
@@ -227,8 +230,12 @@ def prepare_mcmicro_project(
     link_target = reg_dir / f"{scene_label}.ome.tif"
     if link_target.exists() or link_target.is_symlink():
         link_target.unlink()
-    link_target.symlink_to(Path(composite_ometiff_path).resolve())
+    try:
+        link_target.symlink_to(Path(composite_ometiff_path).resolve())
+    except (OSError, NotImplementedError):
+        import shutil
 
+        shutil.copy2(Path(composite_ometiff_path).resolve(), link_target)
     logger.info(f"  registration/{scene_label}.ome.tif -> {composite_ometiff_path}")
     logger.info(f"  MCMICRO project ready: {project_dir}")
     return project_dir
@@ -237,54 +244,31 @@ def prepare_mcmicro_project(
 def build_mcmicro_cmd(
     project_dir: PathLike,
     config: MCMICROConfig,
-) -> str:
-    """Build the MCMICRO ``nextflow run`` command string.
-
-    Unchanged from the source script's ``build_mcmicro_cmd``, now reading
-    ``mcmicro_bin`` / ``mcmicro_nf`` / ``profile`` / ``use_gpu`` /
-    ``extra_args`` from ``config`` instead of individual arguments whose
-    defaults hardcoded this lab's install paths.
-
-    Args:
-        project_dir: MCMICRO project directory (from
-            :func:`prepare_mcmicro_project`).
-        config: :class:`MCMICROConfig` supplying the wrapper/install paths.
-
-    Returns:
-        Command string suitable for ``subprocess.run(cmd, shell=True)``.
-    """
+) -> List[str]:
+    """Build the MCMICRO argv without invoking a shell."""
     full_profile = f"{config.profile},gpu" if config.use_gpu else config.profile
-    parts = [
+    args = [
         str(config.mcmicro_bin),
         "run",
         str(config.mcmicro_nf),
-        f"--in {project_dir}",
-        f"-profile {full_profile}",
+        "--in",
+        str(project_dir),
+        "-profile",
+        full_profile,
     ]
     if config.extra_args:
-        parts.append(config.extra_args)
-    return " ".join(parts)
+        args.extend(shlex.split(config.extra_args))
+    return args
 
 
-def run_mcmicro(cmd: str, timeout: int = 14400) -> int:
-    """Execute an MCMICRO command via subprocess.
-
-    Raises ``RuntimeError`` on non-zero exit so a notebook stops rather than
-    silently proceeding with missing segmentation output. See the module
-    docstring's HPC/SLURM note — this call is only safe from inside a SLURM
-    allocation, never a login node.
-
-    Args:
-        cmd: command string from :func:`build_mcmicro_cmd`.
-        timeout: seconds before killing the process (default 4 h).
-
-    Returns:
-        Return code (0 = success).
-    """
+def run_mcmicro(cmd: Sequence[str], timeout: int = 14400) -> int:
+    """Execute an MCMICRO argv command inside a SLURM allocation."""
     return _run_subprocess(cmd, "MCMICRO", cwd=None, timeout=timeout)
 
 
-def load_mcmicro_results(project_dir: PathLike, prefer: str = "mccellpose") -> Optional[pd.DataFrame]:
+def load_mcmicro_results(
+    project_dir: PathLike, prefer: str = "mccellpose"
+) -> Optional[pd.DataFrame]:
     """Load the MCMICRO per-cell Spatial Feature Table (quantification CSV).
 
     Unchanged from the source script. MCMICRO writes CSVs to
@@ -306,7 +290,9 @@ def load_mcmicro_results(project_dir: PathLike, prefer: str = "mccellpose") -> O
     project_dir = Path(project_dir)
     quant_dir = project_dir / "quantification"
     if not quant_dir.exists():
-        logger.warning(f"  quantification/ not found in {project_dir} — run MCMICRO first")
+        logger.warning(
+            f"  quantification/ not found in {project_dir} — run MCMICRO first"
+        )
         return None
 
     csvs = sorted(quant_dir.glob("*_cell.csv"))
@@ -371,8 +357,12 @@ def bridge_mcmicro_to_pipex(
     """
     df = mcmicro_df.copy()
 
-    x_col = next((c for c in ["X_centroid", "column_centroid", "x"] if c in df.columns), None)
-    y_col = next((c for c in ["Y_centroid", "row_centroid", "y"] if c in df.columns), None)
+    x_col = next(
+        (c for c in ["X_centroid", "column_centroid", "x"] if c in df.columns), None
+    )
+    y_col = next(
+        (c for c in ["Y_centroid", "row_centroid", "y"] if c in df.columns), None
+    )
     if x_col is None or y_col is None:
         raise ValueError(
             f"Cannot find centroid columns in MCMICRO output. "
@@ -395,11 +385,13 @@ def bridge_mcmicro_to_pipex(
     if missing:
         logger.warning(
             f"  {len(missing)} markers missing from MCMICRO output: "
-            + ", ".join(missing[:5]) + ("..." if len(missing) > 5 else "")
+            + ", ".join(missing[:5])
+            + ("..." if len(missing) > 5 else "")
         )
 
     core_cols = [
-        c for c in ["cell_id", "size", "x", "y", "solidity", "eccentricity", "memref"]
+        c
+        for c in ["cell_id", "size", "x", "y", "solidity", "eccentricity", "memref"]
         if c in df.columns
     ]
     marker_cols = [m for m in analysis_markers if m in df.columns]
@@ -410,13 +402,16 @@ def bridge_mcmicro_to_pipex(
     out_path = out_dir / "cell_data.csv"
     out_df.to_csv(out_path, index=False)
 
-    logger.info(f"  Bridge -> {out_path}  ({len(out_df):,} cells x {len(marker_cols)} markers)")
+    logger.info(
+        f"  Bridge -> {out_path}  ({len(out_df):,} cells x {len(marker_cols)} markers)"
+    )
     return str(out_path)
 
 
 # ---------------------------------------------------------------------------
 # PIPEX backend
 # ---------------------------------------------------------------------------
+
 
 def get_measure_markers(
     marker_map: Dict[str, List[str]],
@@ -451,8 +446,8 @@ def build_pipex_segmentation_cmd(
     data_dir: PathLike,
     config: PIPEXConfig,
     measure_markers: Optional[List[str]] = None,
-) -> str:
-    """Build the PIPEX ``segmentation.py`` command string.
+) -> List[str]:
+    """Build the PIPEX segmentation argv list without invoking a shell.
 
     Unchanged from the source script's ``build_segmentation_cmd``, now
     reading ``nuclei_marker`` / ``nuclei_diameter`` / ``nuclei_expansion`` /
@@ -467,10 +462,9 @@ def build_pipex_segmentation_cmd(
             own default of all non-DAPI channels).
 
     Returns:
-        Full command string (uses ``sys.executable`` for the correct Python
-        environment).
+        Argument list passed to ``subprocess.run(shell=False)``.
     """
-    parts = [
+    args = [
         sys.executable,
         "segmentation.py",
         f"-data={data_dir}",
@@ -479,13 +473,13 @@ def build_pipex_segmentation_cmd(
         f"-nuclei_expansion={config.nuclei_expansion}",
     ]
     if config.membrane_markers:
-        parts.append(f"-membrane_markers={','.join(config.membrane_markers)}")
+        args.append(f"-membrane_markers={','.join(config.membrane_markers)}")
     markers = measure_markers if measure_markers is not None else config.measure_markers
     if markers:
-        parts.append(f"-measure_markers={','.join(markers)}")
+        args.append(f"-measure_markers={','.join(markers)}")
     if config.extra_flags:
-        parts.append(config.extra_flags)
-    return " ".join(str(p) for p in parts)
+        args.extend(shlex.split(config.extra_flags))
+    return args
 
 
 def build_pipex_analysis_cmd(
@@ -496,8 +490,8 @@ def build_pipex_analysis_cmd(
     leiden_resolution: float = 0.5,
     kmeans: int = 0,
     extra_flags: str = "",
-) -> str:
-    """Build the PIPEX ``analysis.py`` command string.
+) -> List[str]:
+    """Build the PIPEX analysis argv list without invoking a shell.
 
     Unchanged from the source script's ``build_analysis_cmd``. PIPEX's
     ``analysis.py`` performs normalization/Leiden-or-K-means clustering,
@@ -520,9 +514,9 @@ def build_pipex_analysis_cmd(
         extra_flags: any additional PIPEX flags.
 
     Returns:
-        Full command string.
+        Argument list passed to ``subprocess.run(shell=False)``.
     """
-    parts = [
+    args = [
         sys.executable,
         "analysis.py",
         f"-data={data_dir}",
@@ -530,17 +524,17 @@ def build_pipex_analysis_cmd(
         f'-leiden={"yes" if leiden else "no"}',
     ]
     if leiden:
-        parts.append(f"-leiden_resolution={leiden_resolution}")
+        args.append(f"-leiden_resolution={leiden_resolution}")
     if kmeans:
-        parts.append(f"-kmeans={kmeans}")
+        args.append(f"-kmeans={kmeans}")
     if analysis_markers:
-        parts.append(f"-analysis_markers={','.join(analysis_markers)}")
+        args.append(f"-analysis_markers={','.join(analysis_markers)}")
     if extra_flags:
-        parts.append(extra_flags)
-    return " ".join(str(p) for p in parts)
+        args.extend(shlex.split(extra_flags))
+    return args
 
 
-def run_pipex_cmd(cmd: str, pipex_home: PathLike, timeout: int = 7200) -> int:
+def run_pipex_cmd(cmd: Sequence[str], pipex_home: PathLike, timeout: int = 7200) -> int:
     """Run a PIPEX command from the ``pipex_home`` directory.
 
     Raises ``RuntimeError`` on non-zero return code so a notebook stops
@@ -548,7 +542,7 @@ def run_pipex_cmd(cmd: str, pipex_home: PathLike, timeout: int = 7200) -> int:
     segmentation output. See the module docstring's HPC/SLURM note.
 
     Args:
-        cmd: command string from :func:`build_pipex_segmentation_cmd` /
+        cmd: argv from :func:`build_pipex_segmentation_cmd` /
             :func:`build_pipex_analysis_cmd`.
         pipex_home: directory containing ``segmentation.py`` /
             ``analysis.py``.
@@ -575,7 +569,9 @@ def load_pipex_results(data_dir: PathLike) -> Optional[pd.DataFrame]:
     data_dir = Path(data_dir)
     analysis_dir = data_dir / "analysis"
 
-    candidates = sorted(analysis_dir.glob("*_cell.csv")) + sorted(analysis_dir.glob("*.csv"))
+    candidates = sorted(analysis_dir.glob("*_cell.csv")) + sorted(
+        analysis_dir.glob("*.csv")
+    )
     candidates = [p for p in candidates if "QC" not in p.name]
 
     if not candidates:
@@ -587,7 +583,9 @@ def load_pipex_results(data_dir: PathLike) -> Optional[pd.DataFrame]:
     return df
 
 
-def load_all_pipex_results(pipex_root: PathLike, scene_labels: List[str]) -> Dict[str, pd.DataFrame]:
+def load_all_pipex_results(
+    pipex_root: PathLike, scene_labels: List[str]
+) -> Dict[str, pd.DataFrame]:
     """Load PIPEX results for multiple scenes into a dict keyed by scene label.
 
     Unchanged from the source script. Scenes with no result file are simply
@@ -605,6 +603,7 @@ def load_all_pipex_results(pipex_root: PathLike, scene_labels: List[str]) -> Dic
 # ---------------------------------------------------------------------------
 # step05 orchestrator
 # ---------------------------------------------------------------------------
+
 
 def step05_segment_cells(
     backend: str,
@@ -637,10 +636,10 @@ def step05_segment_cells(
     numbered-step calling convention, with the backend selected explicitly
     via ``backend`` rather than by which script the analyst happened to run.
 
-    Command-builder pattern (unchanged, preserved intentionally — see module
-    docstring): ``build_*_cmd`` -> ``subprocess.run`` -> ``RuntimeError`` on
-    non-zero exit. A failed backend raises immediately; this function never
-    catches that and silently retries with the other backend.
+    Command-builder pattern: ``build_*_cmd`` returns argv tokens and the
+    shared runner calls ``subprocess.run(..., shell=False)``. A non-zero
+    exit raises immediately; this function never catches the failure and
+    silently retries with another backend.
 
     **HPC/SLURM requirement**: if ``run=True`` (the default — matches both
     source scripts' always-run behavior), this function executes an actual
@@ -695,7 +694,7 @@ def step05_segment_cells(
 
             {
                 'backend': 'mcmicro' | 'pipex',
-                'cmd': str,
+                'cmd': list[str],
                 'returncode': int | None,
                 'cells': pd.DataFrame | None,
                 'n_cells': int | None,
@@ -727,7 +726,9 @@ def step05_segment_cells(
         if missing:
             raise ValueError(f"backend='mcmicro' requires: {', '.join(missing)}")
         if bridge_to_pipex_format and pipex_bridge_dir is None:
-            raise ValueError("pipex_bridge_dir is required when bridge_to_pipex_format=True")
+            raise ValueError(
+                "pipex_bridge_dir is required when bridge_to_pipex_format=True"
+            )
 
         prepare_mcmicro_project(
             scene_label,
@@ -746,17 +747,29 @@ def step05_segment_cells(
         if run:
             returncode = run_mcmicro(cmd, timeout=mcmicro_config.timeout_seconds)
             if load_results:
-                cells = load_mcmicro_results(project_dir, prefer=mcmicro_config.segmenter)
+                cells = load_mcmicro_results(
+                    project_dir, prefer=mcmicro_config.segmenter
+                )
                 if bridge_to_pipex_format and cells is not None:
-                    markers_for_bridge = analysis_markers if analysis_markers is not None else (
-                        measure_markers if measure_markers is not None else get_measure_markers(marker_map)
+                    markers_for_bridge = (
+                        analysis_markers
+                        if analysis_markers is not None
+                        else (
+                            measure_markers
+                            if measure_markers is not None
+                            else get_measure_markers(marker_map)
+                        )
                     )
-                    bridge_path = bridge_mcmicro_to_pipex(cells, pipex_bridge_dir, markers_for_bridge)
+                    bridge_path = bridge_mcmicro_to_pipex(
+                        cells, pipex_bridge_dir, markers_for_bridge
+                    )
 
         if verbose:
             status = "not run (run=False)" if not run else f"returncode={returncode}"
             n = f"{len(cells):,} cells" if cells is not None else "no cells loaded"
-            print(f"step05_segment_cells(backend='mcmicro', scene={scene_label}): {status}, {n}")
+            print(
+                f"step05_segment_cells(backend='mcmicro', scene={scene_label}): {status}, {n}"
+            )
 
         return {
             "backend": "mcmicro",
@@ -783,22 +796,34 @@ def step05_segment_cells(
             )
 
         markers = measure_markers
-        if markers is None and pipex_config.measure_markers is None and marker_map is not None:
-            markers = get_measure_markers(marker_map, exclude_rounds=list(pipex_config.exclude_rounds))
+        if (
+            markers is None
+            and pipex_config.measure_markers is None
+            and marker_map is not None
+        ):
+            markers = get_measure_markers(
+                marker_map, exclude_rounds=list(pipex_config.exclude_rounds)
+            )
 
-        cmd = build_pipex_segmentation_cmd(data_dir, pipex_config, measure_markers=markers)
+        cmd = build_pipex_segmentation_cmd(
+            data_dir, pipex_config, measure_markers=markers
+        )
 
         returncode = None
         cells = None
         if run:
-            returncode = run_pipex_cmd(cmd, pipex_config.pipex_home, timeout=pipex_config.timeout_seconds)
+            returncode = run_pipex_cmd(
+                cmd, pipex_config.pipex_home, timeout=pipex_config.timeout_seconds
+            )
             if load_results:
                 cells = load_pipex_results(data_dir)
 
         if verbose:
             status = "not run (run=False)" if not run else f"returncode={returncode}"
             n = f"{len(cells):,} cells" if cells is not None else "no cells loaded"
-            print(f"step05_segment_cells(backend='pipex', data_dir={data_dir}): {status}, {n}")
+            print(
+                f"step05_segment_cells(backend='pipex', data_dir={data_dir}): {status}, {n}"
+            )
 
         return {
             "backend": "pipex",

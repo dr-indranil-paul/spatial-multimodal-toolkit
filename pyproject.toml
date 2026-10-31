@@ -21,6 +21,7 @@ dependencies = [
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
+    "scikit-learn>=1.2",
     "matplotlib>=3.7.0",
 ]
 
@@ -37,11 +38,22 @@ scientific = [
     "scanpy>=1.9.0",
     "pyarrow>=12.0.0",
 ]
+visium = [
+    "spatialdata-io==0.6.0",
+]
+pathology = [
+    "openslide-python==1.4.7",
+    "openslide-bin==4.0.1.2",
+]
+flim = [
+    "phasorpy>=0.12.0",
+    "threadpoolctl>=3.1.0",
+]
 app = [
-    "streamlit>=1.28.0",
-    "fastapi>=0.100.0",
-    "uvicorn>=0.22.0",
-    "sqlalchemy>=2.0.0",
+    "streamlit==1.54.0",
+]
+previews = [
+    "pymupdf>=1.23.0",
 ]
 imaging = [
     "opencv-python>=4.8.0",

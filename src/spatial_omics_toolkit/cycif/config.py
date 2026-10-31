@@ -63,13 +63,18 @@ class CellTypeMarkerConfig:
     """A cell is treated as "not epithelial" when its max epithelial-marker z-score is below this."""
 
     def __post_init__(self) -> None:
-        referenced = set(self.epithelial_markers) | set(self.mesenchymal_markers) | {
-            self.immune_marker,
-            self.antigen_presentation_marker,
-            self.stromal_marker,
-            self.endothelial_marker,
-            self.proliferation_marker,
-        } | set(self.myeloid_markers)
+        referenced = (
+            set(self.epithelial_markers)
+            | set(self.mesenchymal_markers)
+            | {
+                self.immune_marker,
+                self.antigen_presentation_marker,
+                self.stromal_marker,
+                self.endothelial_marker,
+                self.proliferation_marker,
+            }
+            | set(self.myeloid_markers)
+        )
         missing = referenced - set(self.z_score_markers)
         if missing:
             raise ValueError(
@@ -119,12 +124,22 @@ PREVAIL_BARRETTS_MARKER_CONFIG = CellTypeMarkerConfig(
     endothelial_marker="CD31_perinuc5",
     proliferation_marker="Ki67_nuclei",
     z_score_markers=(
-        "Ecad_cytoplasm", "Vim_cytoplasm", "ZEB1_nuclei",
-        "CK5_cytoplasm", "CK19_cytoplasm",
-        "aSMA_cytoplasm", "CD31_perinuc5", "CD45_perinuc5",
-        "CD11c_perinuc5", "IBA1_perinuc5", "HLA-DR_cytoplasm",
+        "Ecad_cytoplasm",
+        "Vim_cytoplasm",
+        "ZEB1_nuclei",
+        "CK5_cytoplasm",
+        "CK19_cytoplasm",
+        "aSMA_cytoplasm",
+        "CD31_perinuc5",
+        "CD45_perinuc5",
+        "CD11c_perinuc5",
+        "IBA1_perinuc5",
+        "HLA-DR_cytoplasm",
         "Ki67_nuclei",
-        "MUC1_cytoplasm", "MUC2_cytoplasm", "MUC5AC_cytoplasm", "MUC6_cytoplasm",
+        "MUC1_cytoplasm",
+        "MUC2_cytoplasm",
+        "MUC5AC_cytoplasm",
+        "MUC6_cytoplasm",
     ),
 )
 
@@ -147,9 +162,15 @@ PREVAIL_BARRETTS_EMT_PROGRAMS: Tuple[ProgramDefinition, ...] = (
 
 # Broad cell-type categories produced by step07_classify_cells, in priority order.
 PREVAIL_BARRETTS_CELL_TYPES: Tuple[str, ...] = (
-    "Hybrid_epithelial", "Epithelial", "Mesenchymal_like",
-    "Myeloid_immune", "Lymphoid_immune", "Endothelial", "Stromal",
-    "Proliferating", "Other",
+    "Hybrid_epithelial",
+    "Epithelial",
+    "Mesenchymal_like",
+    "Myeloid_immune",
+    "Lymphoid_immune",
+    "Endothelial",
+    "Stromal",
+    "Proliferating",
+    "Other",
 )
 
 
@@ -230,6 +251,7 @@ field is the value observed in that cohort's raw CZI acquisitions."""
 # ═══════════════════════════════════════════════════════════════════════════
 # step02_convert_raw_images configuration
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 @dataclass(frozen=True)
 class ImageConversionConfig:
@@ -356,12 +378,12 @@ class RegistrationConfig:
 # acquisition naming scheme is a parameter to that function, not a code change.
 # Must have exactly 6 capture groups, in order: round, markers, slide, date, acq_id, scene.
 PREVAIL_BARRETTS_CZI_FILENAME_PATTERN: str = (
-    r'^(R\d+Q?)_'
-    r'([A-Za-z0-9.\-]+)_'
-    r'(hBE-TMA\d+-\d+)_'
-    r'(\d{4}_\d{2}_\d{2})__'
-    r'(\d+)-'
-    r'(scene[A-Z]\d+)\.czi$'
+    r"^(R\d+Q?)_"
+    r"([A-Za-z0-9.\-]+)_"
+    r"(hBE-TMA\d+-\d+)_"
+    r"(\d{4}_\d{2}_\d{2})__"
+    r"(\d+)-"
+    r"(scene[A-Z]\d+)\.czi$"
 )
 
 # Round-label sort convention: R1 < R2 < ... < R5 < R5Q. Plain alphabetical
@@ -370,12 +392,13 @@ PREVAIL_BARRETTS_CZI_FILENAME_PATTERN: str = (
 # pattern into a numeric-aware (round_number, is_Q_suffix) key instead. A
 # cohort using a different round-label scheme (e.g. "Cycle3") passes its own
 # pattern with the same two capture groups (numeric part, optional suffix flag).
-PREVAIL_BARRETTS_ROUND_LABEL_PATTERN: str = r'^R(\d+)(Q?)$'
+PREVAIL_BARRETTS_ROUND_LABEL_PATTERN: str = r"^R(\d+)(Q?)$"
 
 
 # ---------------------------------------------------------------------------
 # step04_export_registered / step05_segment_cells configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ExportNamingConfig:

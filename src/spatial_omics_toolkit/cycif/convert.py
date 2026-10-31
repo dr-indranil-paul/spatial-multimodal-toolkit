@@ -37,10 +37,10 @@ What changed to generalize
   (``AGENTS.md`` #2) and this package's own ``DESIGN.md`` non-negotiable
   #10, that must never run on the login node or block a notebook kernel.
   ``step02_convert_raw_images`` therefore *builds* (and optionally
-  submits) a SLURM ``sbatch`` script by default — mirroring how
-  ``mcmicro.py::build_mcmicro_cmd``/``run_mcmicro`` build and dispatch a
-  command rather than doing segmentation in-process — instead of calling
-  the pixel-processing functions directly in the calling process.
+  submits) a SLURM ``sbatch`` script by default. Unlike the segmentation
+  adapter, which runs the MCMICRO wrapper as an argv command with
+  ``shell=False`` inside its allocated worker, conversion dispatches its
+  pixel-processing CLI through the generated SLURM script.
   ``convert_raw_images_inprocess`` remains directly callable (and is what
   the dispatched SLURM job actually runs, via this module's ``__main__``
   CLI) for small test/dev inputs where blocking briefly is acceptable.
@@ -62,11 +62,8 @@ import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Tuple
-
 import numpy as np
 import pandas as pd
-import tifffile
-from skimage import exposure, img_as_ubyte
 
 from spatial_omics_toolkit.cycif.config import (
     ImageConversionConfig,
@@ -81,6 +78,7 @@ logger = logging.getLogger("spatial_omics_toolkit.cycif.convert")
 # ═══════════════════════════════════════════════════════════════════════════
 # 1. Color mapping — ported unchanged (generalized with an optional override)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def get_color_map(
     channel_name: str,
@@ -115,7 +113,7 @@ def get_color_map(
         return [1.0, 0.5, 0.0]  # Orange / Red
     if any(x in name for x in ["CY5", "647", "FAR RED"]):
         return [1.0, 0.0, 0.0]  # Deep Red
-    return [1.0, 1.0, 1.0]      # Default White
+    return [1.0, 1.0, 1.0]  # Default White
 
 
 def create_rgb_composite(
@@ -147,10 +145,14 @@ def create_rgb_composite(
         for c in range(3):
             composite[:, :, c] += channel_norm * color[c]
 
+    from skimage import img_as_ubyte
+
     return img_as_ubyte(np.clip(composite, 0, 1))
 
 
-def enhance_image(image_data: np.ndarray, percentiles: Tuple[float, float] = (2.0, 98.0)) -> np.ndarray:
+def enhance_image(
+    image_data: np.ndarray, percentiles: Tuple[float, float] = (2.0, 98.0)
+) -> np.ndarray:
     """16-bit contrast stretching by percentile.
 
     Ported from ``process_czi.py::enhance_image``; the stretch algorithm
@@ -165,13 +167,18 @@ def enhance_image(image_data: np.ndarray, percentiles: Tuple[float, float] = (2.
         Contrast-stretched ``uint16`` image.
     """
     p_lo, p_hi = np.percentile(image_data, percentiles)
-    enhanced = exposure.rescale_intensity(image_data, in_range=(p_lo, p_hi), out_range=(0, 65535))
+    from skimage import exposure
+
+    enhanced = exposure.rescale_intensity(
+        image_data, in_range=(p_lo, p_hi), out_range=(0, 65535)
+    )
     return enhanced.astype(np.uint16)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 2. Per-file conversion — heavy pixel processing, lazy raw-format imports
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def convert_czi_file(
     czi_path,
@@ -199,12 +206,17 @@ def convert_czi_file(
     czi_path = Path(czi_path)
     output_dir = Path(output_dir)
     try:
+        import tifffile
+
         import aicspylibczi
     except ImportError as e:
         return {
-            "path": str(czi_path), "format": "czi", "status": "failed", "outputs": [],
-            "error": f"aicspylibczi not installed ({e}). Install with: "
-                     f"pip install spatial-omics-toolkit[imaging]",
+            "path": str(czi_path),
+            "format": "czi",
+            "status": "failed",
+            "outputs": [],
+            "error": f"Required imaging dependency not installed ({e}). Install with: "
+            f"pip install spatial-omics-toolkit[imaging]",
         }
 
     try:
@@ -221,13 +233,17 @@ def convert_czi_file(
         it = np.nditer(stack_squeezed[..., 0, 0], flags=["multi_index"])
         for _ in it:
             idx = it.multi_index
-            processed_stack[idx] = enhance_image(stack_squeezed[idx], config.contrast_percentiles)
+            processed_stack[idx] = enhance_image(
+                stack_squeezed[idx], config.contrast_percentiles
+            )
 
         outputs: List[str] = []
         tif_path = output_dir / f"{czi_path.stem}.tif"
         tifffile.imwrite(
-            tif_path, processed_stack,
-            metadata={"Axes": axes_labels, "Channel": {"Name": chan_names}}, imagej=True,
+            tif_path,
+            processed_stack,
+            metadata={"Axes": axes_labels, "Channel": {"Name": chan_names}},
+            imagej=True,
         )
         outputs.append(str(tif_path))
 
@@ -237,22 +253,40 @@ def convert_czi_file(
             mip_axes = axes_labels.replace("Z", "")
             mip_path = output_dir / f"{czi_path.stem}_MIP.tif"
             tifffile.imwrite(
-                mip_path, mip_data,
-                metadata={"Axes": mip_axes, "Channel": {"Name": chan_names}}, imagej=True,
+                mip_path,
+                mip_data,
+                metadata={"Axes": mip_axes, "Channel": {"Name": chan_names}},
+                imagej=True,
             )
             outputs.append(str(mip_path))
 
             if config.generate_composite and "C" in mip_axes:
                 c_axis = mip_axes.find("C")
-                mip_for_rgb = np.moveaxis(mip_data, c_axis, 0) if c_axis != 0 else mip_data
-                rgb_comp = create_rgb_composite(mip_for_rgb, chan_names, config.custom_color_map)
+                mip_for_rgb = (
+                    np.moveaxis(mip_data, c_axis, 0) if c_axis != 0 else mip_data
+                )
+                rgb_comp = create_rgb_composite(
+                    mip_for_rgb, chan_names, config.custom_color_map
+                )
                 comp_path = output_dir / f"{czi_path.stem}_Composite.png"
                 tifffile.imwrite(comp_path, rgb_comp)
                 outputs.append(str(comp_path))
 
-        return {"path": str(czi_path), "format": "czi", "status": "ok", "outputs": outputs, "error": None}
+        return {
+            "path": str(czi_path),
+            "format": "czi",
+            "status": "ok",
+            "outputs": outputs,
+            "error": None,
+        }
     except Exception as exc:
-        return {"path": str(czi_path), "format": "czi", "status": "failed", "outputs": [], "error": str(exc)}
+        return {
+            "path": str(czi_path),
+            "format": "czi",
+            "status": "failed",
+            "outputs": [],
+            "error": str(exc),
+        }
 
 
 def _parse_nd2_channels(file_path: Path, nd2_file) -> List[str]:
@@ -293,11 +327,16 @@ def convert_nd2_file(
     nd2_path = Path(nd2_path)
     output_dir = Path(output_dir)
     try:
+        import tifffile
+
         import nd2
     except ImportError as e:
         return {
-            "path": str(nd2_path), "format": "nd2", "status": "failed", "outputs": [],
-            "error": f"nd2 not installed ({e}). Install with: pip install spatial-omics-toolkit[imaging]",
+            "path": str(nd2_path),
+            "format": "nd2",
+            "status": "failed",
+            "outputs": [],
+            "error": f"Required imaging dependency not installed ({e}). Install with: pip install spatial-omics-toolkit[imaging]",
         }
 
     try:
@@ -310,7 +349,9 @@ def convert_nd2_file(
             if len(chan_names) != ch_count:
                 chan_names = [f"Ch{i}" for i in range(ch_count)]
             raw_axes = nd2_file.dims
-            squeezed_axes = "".join(a for a in raw_axes if stack_squeezed.shape[raw_axes.index(a)] > 1)
+            squeezed_axes = "".join(
+                a for a in raw_axes if stack_squeezed.shape[raw_axes.index(a)] > 1
+            )
 
         while stack_squeezed.ndim < 5:
             stack_squeezed = stack_squeezed[np.newaxis, ...]
@@ -322,7 +363,9 @@ def convert_nd2_file(
                 for z in range(stack_squeezed.shape[z_dim]):
                     slice_2d = stack_squeezed[t, c, z]
                     if slice_2d.dtype == np.uint16:
-                        processed[t, c, z] = enhance_image(slice_2d, config.contrast_percentiles)
+                        processed[t, c, z] = enhance_image(
+                            slice_2d, config.contrast_percentiles
+                        )
                     else:
                         img = slice_2d.astype(np.float32)
                         rng = img.max() - img.min()
@@ -332,8 +375,10 @@ def convert_nd2_file(
         outputs: List[str] = []
         tif_path = output_dir / f"{nd2_path.stem}.tif"
         tifffile.imwrite(
-            tif_path, processed,
-            metadata={"Axes": squeezed_axes, "Channel": {"Name": chan_names}}, imagej=True,
+            tif_path,
+            processed,
+            metadata={"Axes": squeezed_axes, "Channel": {"Name": chan_names}},
+            imagej=True,
         )
         outputs.append(str(tif_path))
 
@@ -342,8 +387,10 @@ def convert_nd2_file(
             mip_axes = squeezed_axes.replace("Z", "")
             mip_path = output_dir / f"{nd2_path.stem}_MIP.tif"
             tifffile.imwrite(
-                mip_path, mip,
-                metadata={"Axes": mip_axes, "Channel": {"Name": chan_names}}, imagej=True,
+                mip_path,
+                mip,
+                metadata={"Axes": mip_axes, "Channel": {"Name": chan_names}},
+                imagej=True,
             )
             outputs.append(str(mip_path))
 
@@ -356,14 +403,27 @@ def convert_nd2_file(
                 tifffile.imwrite(comp_path, rgb)
                 outputs.append(str(comp_path))
 
-        return {"path": str(nd2_path), "format": "nd2", "status": "ok", "outputs": outputs, "error": None}
+        return {
+            "path": str(nd2_path),
+            "format": "nd2",
+            "status": "ok",
+            "outputs": outputs,
+            "error": None,
+        }
     except Exception as exc:
-        return {"path": str(nd2_path), "format": "nd2", "status": "failed", "outputs": [], "error": str(exc)}
+        return {
+            "path": str(nd2_path),
+            "format": "nd2",
+            "status": "failed",
+            "outputs": [],
+            "error": str(exc),
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 3. In-process batch conversion (small inputs / the SLURM job's own body)
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def convert_raw_images_inprocess(
     input_folder,
@@ -419,7 +479,9 @@ def convert_raw_images_inprocess(
     df = pd.DataFrame(results, columns=["path", "format", "status", "outputs", "error"])
     n_failed = int((df["status"] == "failed").sum()) if len(df) else 0
     if verbose:
-        logger.info(f"Converted {len(df) - n_failed}/{len(df)} file(s) ({n_failed} failed)")
+        logger.info(
+            f"Converted {len(df) - n_failed}/{len(df)} file(s) ({n_failed} failed)"
+        )
 
     if strict and n_failed:
         failed = df.loc[df["status"] == "failed", ["path", "error"]].to_dict("records")
@@ -431,6 +493,7 @@ def convert_raw_images_inprocess(
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. SLURM job building & dispatch — the default path for step02
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def build_conversion_sbatch_script(
     input_folder,
@@ -444,8 +507,8 @@ def build_conversion_sbatch_script(
     New (not present in the source scripts, which were run directly or
     wrapped ad hoc by the analyst): dispatches
     :func:`convert_raw_images_inprocess` via this module's ``__main__``
-    CLI, matching how ``mcmicro.py::build_mcmicro_cmd`` builds a command
-    string rather than running the pipeline itself.
+    CLI. Unlike MCMICRO's shell-free argv runner, this builder produces an
+    ``sbatch`` script that invokes the conversion CLI on the allocated node.
 
     Args:
         input_folder / output_folder: passed through to the CLI invocation.
@@ -507,7 +570,9 @@ def submit_conversion_job(script_path, sbatch_bin: str = "sbatch") -> int:
         RuntimeError: if ``sbatch`` exits non-zero, or its stdout does not
             contain a parseable ``Submitted batch job <id>`` line.
     """
-    result = subprocess.run([sbatch_bin, str(script_path)], capture_output=True, text=True)
+    result = subprocess.run(
+        [sbatch_bin, str(script_path)], capture_output=True, text=True
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"sbatch submission failed (exit {result.returncode}) for {script_path}.\n"
@@ -515,13 +580,16 @@ def submit_conversion_job(script_path, sbatch_bin: str = "sbatch") -> int:
         )
     m = re.search(r"Submitted batch job (\d+)", result.stdout)
     if not m:
-        raise RuntimeError(f"sbatch exited 0 but job ID could not be parsed from stdout: {result.stdout!r}")
+        raise RuntimeError(
+            f"sbatch exited 0 but job ID could not be parsed from stdout: {result.stdout!r}"
+        )
     return int(m.group(1))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 5. step02_convert_raw_images — the public step function
 # ═══════════════════════════════════════════════════════════════════════════
+
 
 def step02_convert_raw_images(
     input_folder,
@@ -594,7 +662,11 @@ def step02_convert_raw_images(
 
     if dispatch == "inprocess":
         return convert_raw_images_inprocess(
-            input_path, output_path, config=conversion_config, strict=strict, verbose=verbose,
+            input_path,
+            output_path,
+            config=conversion_config,
+            strict=strict,
+            verbose=verbose,
         )
 
     jobs_path = Path(jobs_dir) if jobs_dir else output_path / "slurm_jobs"
@@ -603,7 +675,11 @@ def step02_convert_raw_images(
     log_path.mkdir(parents=True, exist_ok=True)
 
     script_text = build_conversion_sbatch_script(
-        input_path, output_path, slurm_config, conversion_config, log_dir=str(log_path),
+        input_path,
+        output_path,
+        slurm_config,
+        conversion_config,
+        log_dir=str(log_path),
     )
     script_path = jobs_path / f"{slurm_config.job_name}.sbatch"
     script_path.write_text(script_text)
@@ -612,14 +688,21 @@ def step02_convert_raw_images(
 
     if not submit:
         return {
-            "dispatch": "slurm", "submitted": False,
-            "script_path": str(script_path), "sbatch_cmd": f"sbatch {script_path}",
+            "dispatch": "slurm",
+            "submitted": False,
+            "script_path": str(script_path),
+            "sbatch_cmd": f"sbatch {script_path}",
         }
 
     job_id = submit_conversion_job(script_path)
     if verbose:
         logger.info(f"Submitted SLURM job {job_id} ({script_path})")
-    return {"dispatch": "slurm", "submitted": True, "script_path": str(script_path), "job_id": job_id}
+    return {
+        "dispatch": "slurm",
+        "submitted": True,
+        "script_path": str(script_path),
+        "job_id": job_id,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -634,8 +717,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("input_folder")
     parser.add_argument("output_folder")
-    parser.add_argument("--no-mip", action="store_true", help="Skip maximum-intensity projection.")
-    parser.add_argument("--no-composite", action="store_true", help="Skip pseudocolor RGB composite.")
+    parser.add_argument(
+        "--no-mip", action="store_true", help="Skip maximum-intensity projection."
+    )
+    parser.add_argument(
+        "--no-composite", action="store_true", help="Skip pseudocolor RGB composite."
+    )
     args = parser.parse_args()
 
     cli_config = ImageConversionConfig(
@@ -643,4 +730,6 @@ if __name__ == "__main__":
         generate_composite=not args.no_composite,
     )
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    convert_raw_images_inprocess(args.input_folder, args.output_folder, config=cli_config)
+    convert_raw_images_inprocess(
+        args.input_folder, args.output_folder, config=cli_config
+    )

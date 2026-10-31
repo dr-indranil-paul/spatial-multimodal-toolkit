@@ -28,7 +28,12 @@ def version_callback(value: bool):
 @app.callback()
 def main(
     version: Optional[bool] = typer.Option(
-        None, "--version", "-v", callback=version_callback, is_eager=True, help="Show version"
+        None,
+        "--version",
+        "-v",
+        callback=version_callback,
+        is_eager=True,
+        help="Show version",
     )
 ):
     pass
@@ -36,17 +41,18 @@ def main(
 
 @app.command()
 def validate(
-    manifest: Path = typer.Option(..., "--manifest", "-m", help="Path to intake_manifest.json file"),
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Optional file path to save validation result JSON")
+    manifest: Path = typer.Option(
+        ..., "--manifest", "-m", help="Path to intake_manifest.json file"
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Optional file path to save validation result JSON"
+    ),
 ):
     """Validate intake manifest, specimen hierarchy, file checksums, and metadata semantics."""
     manifest_obj, errors = load_and_validate_manifest(manifest)
-    
+
     if errors:
-        result = {
-            "status": "INVALID",
-            "errors": [err.model_dump() for err in errors]
-        }
+        result = {"status": "INVALID", "errors": [err.model_dump() for err in errors]}
         output_str = json.dumps(result, indent=2)
         if output:
             output.write_text(output_str, encoding="utf-8")
@@ -61,7 +67,7 @@ def validate(
         "modality": manifest_obj.modality.value,
         "specimens_count": len(manifest_obj.specimens),
         "input_files_count": len(manifest_obj.input_files),
-        "errors": []
+        "errors": [],
     }
     output_str = json.dumps(result, indent=2)
     if output:
@@ -73,11 +79,13 @@ def validate(
 
 @app.command()
 def schema(
-    output_dir: Path = typer.Option(Path("./schemas"), "--output-dir", "-o", help="Directory to save JSON Schemas")
+    output_dir: Path = typer.Option(
+        Path("./schemas"), "--output-dir", "-o", help="Directory to save JSON Schemas"
+    )
 ):
     """Export machine-readable JSON Schemas for validation and AI agent integration."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     schemas = {
         "intake_manifest.schema.json": IntakeManifest.model_json_schema(),
         "job_spec.schema.json": JobSpec.model_json_schema(),
@@ -94,7 +102,9 @@ def schema(
 @app.command()
 def plan(
     job: Path = typer.Option(..., "--job", "-j", help="Path to job_spec.json"),
-    output: Optional[Path] = typer.Option(None, "--output", "-o", help="Path to write resolved execution plan")
+    output: Optional[Path] = typer.Option(
+        None, "--output", "-o", help="Path to write resolved execution plan"
+    ),
 ):
     """Resolve plugin stages, resource envelopes, and fallback DAG for a job."""
     if not job.is_file():
@@ -102,18 +112,26 @@ def plan(
             error_code=ErrorCode.FILE_NOT_FOUND,
             reason=f"Job file not found at '{job}'",
             remediation_hint="Provide a valid path to job_spec.json",
-            context={"job": str(job)}
+            context={"job": str(job)},
         )
-        typer.echo(json.dumps({"status": "FAILED", "errors": [err.model_dump()]}, indent=2))
+        typer.echo(
+            json.dumps({"status": "FAILED", "errors": [err.model_dump()]}, indent=2)
+        )
         raise typer.Exit(code=1)
 
     plan_result = {
         "status": "PLANNED",
         "job_file": str(job),
-        "execution_dag": ["validate_inputs", "pseudobulk_preaggregation", "containerized_r_differential", "spatial_ome_zarr_tiling", "generate_release_bundle"],
-        "slurm_wrapper": "sbatch --cpus-per-task=1 --mem=4G --wrap='nextflow run main.nf'"
+        "execution_dag": [
+            "validate_inputs",
+            "pseudobulk_preaggregation",
+            "containerized_r_differential",
+            "spatial_ome_zarr_tiling",
+            "generate_release_bundle",
+        ],
+        "slurm_wrapper": "sbatch --cpus-per-task=1 --mem=4G --wrap='nextflow run main.nf'",
     }
-    
+
     out_str = json.dumps(plan_result, indent=2)
     if output:
         output.write_text(out_str, encoding="utf-8")
@@ -123,23 +141,23 @@ def plan(
 
 
 @app.command()
-def status(
-    job_id: str = typer.Option(..., "--job-id", "-i", help="Job UUID string")
-):
+def status(job_id: str = typer.Option(..., "--job-id", "-i", help="Job UUID string")):
     """Write machine-readable job status snapshot."""
     status_info = {
         "job_id": job_id,
         "status": "CANONICAL",
         "progress_percent": 100,
         "active_stage": "release_bundle_verification",
-        "error": None
+        "error": None,
     }
     typer.echo(json.dumps(status_info, indent=2))
 
 
 @app.command()
 def verify(
-    run_dir: Path = typer.Option(..., "--run-dir", "-r", help="Path to run_<uuid> bundle directory")
+    run_dir: Path = typer.Option(
+        ..., "--run-dir", "-r", help="Path to run_<uuid> bundle directory"
+    )
 ):
     """Verify bundle checksums, schema compliance, and stage states."""
     if not run_dir.is_dir():
@@ -147,9 +165,11 @@ def verify(
             error_code=ErrorCode.FILE_NOT_FOUND,
             reason=f"Run directory not found at '{run_dir}'",
             remediation_hint="Provide a valid path to run_<uuid> directory",
-            context={"run_dir": str(run_dir)}
+            context={"run_dir": str(run_dir)},
         )
-        typer.echo(json.dumps({"status": "FAILED", "errors": [err.model_dump()]}, indent=2))
+        typer.echo(
+            json.dumps({"status": "FAILED", "errors": [err.model_dump()]}, indent=2)
+        )
         raise typer.Exit(code=1)
 
     typer.echo(json.dumps({"status": "VERIFIED", "run_dir": str(run_dir)}, indent=2))

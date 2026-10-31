@@ -24,7 +24,12 @@ def test_pseudobulk_aggregation():
         index=["Cell1", "Cell2", "Cell3", "Cell4"],
     )
 
-    res = preaggregate_pseudobulk(expression_df, metadata_df, sample_col="biological_unit_id", group_col="cell_type")
+    res = preaggregate_pseudobulk(
+        expression_df,
+        metadata_df,
+        sample_col="biological_unit_id",
+        group_col="cell_type",
+    )
     assert "T_cell" in res
     t_cell_matrix = res["T_cell"]
 

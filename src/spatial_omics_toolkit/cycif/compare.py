@@ -34,6 +34,7 @@ PathLike = Union[str, Path]
 try:
     from scipy.stats import false_discovery_control as _bh_fdr
 except ImportError:  # scipy < 1.11
+
     def _bh_fdr(pvals: np.ndarray) -> np.ndarray:
         pvals = np.asarray(pvals, dtype=float)
         order = np.argsort(pvals)
@@ -122,7 +123,9 @@ def step12_compare_groups(
             row["mean_b"] = float(vals_b.mean())
             row["diff"] = row["mean_a"] - row["mean_b"]
             pooled_var = (vals_a.var(ddof=1) + vals_b.var(ddof=1)) / 2
-            row["cohens_d"] = float(row["diff"] / np.sqrt(pooled_var)) if pooled_var > 0 else 0.0
+            row["cohens_d"] = (
+                float(row["diff"] / np.sqrt(pooled_var)) if pooled_var > 0 else 0.0
+            )
             _, row["welch_t_p"] = ttest_ind(vals_a, vals_b, equal_var=False)
             _, row["mannwhitney_p"] = mannwhitneyu(vals_a, vals_b)
         rows.append(row)
@@ -132,12 +135,16 @@ def step12_compare_groups(
     finite_mask = out["welch_t_p"].notna()
     out["fdr_bh_p"] = np.nan
     if finite_mask.any():
-        out.loc[finite_mask, "fdr_bh_p"] = _bh_fdr(out.loc[finite_mask, "welch_t_p"].to_numpy())
+        out.loc[finite_mask, "fdr_bh_p"] = _bh_fdr(
+            out.loc[finite_mask, "welch_t_p"].to_numpy()
+        )
 
     n_a = int(core_df[group_col].eq(group_a).sum())
     n_b = int(core_df[group_col].eq(group_b).sum())
-    print(f"Compared {len(out)} metrics: {group_a} (n={n_a}) vs {group_b} (n={n_b}); "
-          f"n is rows of core_df — verify these are independent biological units before citing.")
+    print(
+        f"Compared {len(out)} metrics: {group_a} (n={n_a}) vs {group_b} (n={n_b}); "
+        f"n is rows of core_df — verify these are independent biological units before citing."
+    )
 
     if output_dir is not None:
         import matplotlib.pyplot as plt
@@ -159,7 +166,9 @@ def step12_compare_groups(
             parts = ax.violinplot(data, showmedians=True)
             for i, vals in enumerate(data, start=1):
                 jitter = (np.random.default_rng(0).random(len(vals)) - 0.5) * 0.08
-                ax.scatter(np.full(len(vals), i) + jitter, vals, color="black", alpha=0.6, s=12)
+                ax.scatter(
+                    np.full(len(vals), i) + jitter, vals, color="black", alpha=0.6, s=12
+                )
             ax.set_xticks([1, 2])
             ax.set_xticklabels([group_a, group_b])
             row = out.loc[out["metric"] == metric]

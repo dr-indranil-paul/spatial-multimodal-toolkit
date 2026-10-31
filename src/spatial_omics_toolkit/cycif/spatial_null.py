@@ -45,7 +45,7 @@ def _knn_delta(
     if len(src) == 0 or not tm.any():
         return np.nan
     kk = min(k, n - 1)
-    neigh = tm[indices[src, 1:kk + 1]]
+    neigh = tm[indices[src, 1 : kk + 1]]
     observed = neigh.mean(axis=1)
     expected = (tm.sum() - tm[src].astype(float)) / max(n - 1, 1)
     return float(np.nanmean(observed - expected))
@@ -66,7 +66,12 @@ def _core_spatial_null(
 ) -> dict:
     x = pd.to_numeric(grp.get(x_col), errors="coerce").to_numpy(float)
     y = pd.to_numeric(grp.get(y_col), errors="coerce").to_numpy(float)
-    types = grp.get(type_col, pd.Series("Other", index=grp.index)).fillna("Other").astype(str).to_numpy()
+    types = (
+        grp.get(type_col, pd.Series("Other", index=grp.index))
+        .fillna("Other")
+        .astype(str)
+        .to_numpy()
+    )
     ok = np.isfinite(x) & np.isfinite(y)
     x, y, types = x[ok], y[ok], types[ok]
 
@@ -196,26 +201,53 @@ def step11_spatial_null(
     rows = []
     for core, grp in df.groupby(core_col):
         result = _core_spatial_null(
-            grp, x_col, y_col, type_col, source_type, target_type, k,
-            n_permutations, rng, tissue_mask_col, alternative,
+            grp,
+            x_col,
+            y_col,
+            type_col,
+            source_type,
+            target_type,
+            k,
+            n_permutations,
+            rng,
+            tissue_mask_col,
+            alternative,
         )
         null_deltas = result.pop("_null_deltas", None)
         result[core_col] = core
         rows.append(result)
 
-        if out_dir is not None and null_deltas is not None and len(null_deltas) and plotted < max_histograms:
+        if (
+            out_dir is not None
+            and null_deltas is not None
+            and len(null_deltas)
+            and plotted < max_histograms
+        ):
             import matplotlib.pyplot as plt
 
             fig, ax = plt.subplots(figsize=(5, 4))
-            ax.hist(null_deltas, bins=40, color="lightgray", label=f"null (n={len(null_deltas)} permutations)")
-            ax.axvline(result["observed_delta"], color="red", linewidth=2,
-                       label=f"observed = {result['observed_delta']:.4f}")
+            ax.hist(
+                null_deltas,
+                bins=40,
+                color="lightgray",
+                label=f"null (n={len(null_deltas)} permutations)",
+            )
+            ax.axvline(
+                result["observed_delta"],
+                color="red",
+                linewidth=2,
+                label=f"observed = {result['observed_delta']:.4f}",
+            )
             ax.set_xlabel(f"{source_type} -> {target_type} knn{k} enrichment delta")
             ax.set_title(f"step11: spatial null — {core} (p={result['p_value']:.4f})")
             ax.legend(fontsize=7)
             fig.tight_layout()
             safe_core = str(core).replace("/", "_")
-            savefig(fig, out_dir / f"step11_null_{source_type}_to_{target_type}_{safe_core}.png", verbose=verbose)
+            savefig(
+                fig,
+                out_dir / f"step11_null_{source_type}_to_{target_type}_{safe_core}.png",
+                verbose=verbose,
+            )
             plotted += 1
 
     out = pd.DataFrame(rows)

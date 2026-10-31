@@ -14,7 +14,10 @@ from typing import Dict, Optional, Union
 
 import pandas as pd
 
-from spatial_omics_toolkit.analysis.cycif_qc import calculate_marker_snr, filter_background_signal
+from spatial_omics_toolkit.analysis.cycif_qc import (
+    calculate_marker_snr,
+    filter_background_signal,
+)
 from spatial_omics_toolkit.cycif.qc_plots import ensure_dir, savefig
 
 PathLike = Union[str, Path]
@@ -57,7 +60,9 @@ def step06_qc_filter_intensities(
     )
     if background_thresholds is None:
         background_thresholds = {
-            col: float(intensity_df[col].dropna().quantile(background_percentile / 100.0))
+            col: float(
+                intensity_df[col].dropna().quantile(background_percentile / 100.0)
+            )
             for col in intensity_df.select_dtypes(include="number").columns
         }
     filtered = filter_background_signal(intensity_df, background_thresholds)
@@ -70,7 +75,13 @@ def step06_qc_filter_intensities(
         markers = sorted(snr, key=snr.get)
         fig, ax = plt.subplots(figsize=(max(4, 0.3 * len(markers)), 4))
         ax.bar(markers, [snr[m] for m in markers], color="steelblue")
-        ax.axhline(1.0, color="red", linestyle="--", linewidth=1, label="SNR = 1 (no signal above background)")
+        ax.axhline(
+            1.0,
+            color="red",
+            linestyle="--",
+            linewidth=1,
+            label="SNR = 1 (no signal above background)",
+        )
         ax.set_ylabel("Signal-to-noise ratio")
         ax.set_title("step06: per-marker SNR (post-segmentation intensity QC)")
         ax.tick_params(axis="x", rotation=90)
