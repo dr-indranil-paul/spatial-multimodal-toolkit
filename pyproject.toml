@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spatial-omics-toolkit"
 version = "0.1.0"
-description = "Institute-grade spatial and single-cell multiomics analytics platform"
+description = "Guided Streamlit workflows for spatial imaging and omics data."
 readme = "README.md"
 authors = [
     { name = "Dr. Indranil Paul", email = "pauli@ohsu.edu" }

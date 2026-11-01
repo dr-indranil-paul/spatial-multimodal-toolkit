@@ -14,7 +14,7 @@ from spatial_omics_toolkit.io.manifest import load_and_validate_manifest
 
 app = typer.Typer(
     name="spatial-omics",
-    help="Institute-grade spatial and single-cell multiomics analytics platform CLI",
+    help="Validate and inspect spatial analysis job bundles.",
     add_completion=False,
 )
 
