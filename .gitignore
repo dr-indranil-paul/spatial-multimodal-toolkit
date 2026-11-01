@@ -28,3 +28,9 @@ venv/
 # Operating-system files
 .DS_Store
 Thumbs.db
+
+# Private local research fixtures
+/fixtures/
+
+# Generated run bundles
+/runs/

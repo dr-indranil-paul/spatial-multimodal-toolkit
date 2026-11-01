@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-StageStatus = Literal["CREATED", "RUNNING", "SUCCEEDED", "WARNING", "FAILED", "BLOCKED", "QC_PENDING"]
+StageStatus = Literal["CREATED", "RUNNING", "SUCCEEDED", "REUSED", "WARNING", "FAILED", "BLOCKED", "QC_PENDING"]
 
 
 class RunRequest(BaseModel):
@@ -53,12 +53,21 @@ class ParameterField(BaseModel):
     review_required: bool = False
 
 
+class FunctionReference(BaseModel):
+    """A source function responsible for a workflow stage."""
+
+    source_file: str
+    function_name: str
+    role: str
+
+
 class StageDefinition(BaseModel):
     stage_id: str
     title: str
     purpose: str
     tools: list[ToolReference] = Field(default_factory=list)
-
+    implementations: list[FunctionReference] = Field(default_factory=list)
+    event_stage_ids: list[str] = Field(default_factory=list)
 
 class WorkflowDescriptor(BaseModel):
     workflow_id: str

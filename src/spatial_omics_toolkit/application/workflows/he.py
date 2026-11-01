@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from spatial_omics_toolkit.application.contracts import (
+    FunctionReference,
     ParameterField,
     PreflightResult,
     RunRequest,
@@ -76,6 +77,13 @@ def describe() -> WorkflowDescriptor:
                         documentation_url="https://github.com/cgohlke/tifffile",
                     ),
                 ],
+                implementations=[
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_image_files", role="Discover supported source files"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_inspect_image", role="Read image metadata and create per-image preview"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_render_czi_preview", role="Dispatch CZI preview rendering"),
+                    FunctionReference(source_file="external:image_previews.py", function_name="czi_rgb_preview", role="Canonical CZI RGB preview rendering"),
+                ],
+                event_stage_ids=["workflow_output"],
             )
         ],
         input_description=(

@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 
 from spatial_omics_toolkit.application.contracts import (
+    FunctionReference,
     ParameterField,
     PreflightResult,
     RunRequest,
@@ -31,7 +32,7 @@ from spatial_omics_toolkit.cycif.spatial_null import step11_spatial_null
 
 
 LIMITATIONS = [
-    "This workflow consumes an explicit already-segmented MCMICRO/PIPEX cell-feature table; it does not run raw-image intake, registration, or segmentation.",
+    "This workflow consumes an explicit already-segmented MCMICRO cell-feature table; it does not run raw-image intake, registration, or segmentation.",
     "step13_pseudobulk is intentionally unavailable for continuous MCMICRO intensity values; this workflow does not treat intensities as raw counts.",
     "step10 spatial features are descriptive only. Spatial association inference requires an explicitly configured step11 spatial null.",
     "step11 raw p-values are always Exploratory in this adapter; selection-adjusted full-pipeline reruns are not implemented.",
@@ -96,7 +97,7 @@ def _resolved(request: RunRequest) -> tuple[dict[str, Any], list[str], list[str]
     frame: pd.DataFrame | None = None
     feature_raw = p.get("feature_table_path")
     if not isinstance(feature_raw, str) or not feature_raw.strip():
-        blockers.append("Select the exact upstream MCMICRO/PIPEX cell-feature table with feature_table_path.")
+        blockers.append("Select the exact upstream MCMICRO cell-feature table with feature_table_path.")
     else:
         feature_path = Path(feature_raw).expanduser().resolve()
         allowed = [request.modality_dir.resolve(), request.run_dir.resolve()]
@@ -228,7 +229,7 @@ def _resolved(request: RunRequest) -> tuple[dict[str, Any], list[str], list[str]
     params["specimen_mapping_confirmed"] = p.get("specimen_mapping_confirmed") is True
     params["use_specimen_id_column"] = use_specimen_column
     params["annotation_csv"] = str(request.annotation_csv.resolve())
-    params["pseudobulk"] = "not included: continuous MCMICRO/PIPEX intensity values are not raw counts"
+    params["pseudobulk"] = "not included: continuous MCMICRO intensity values are not raw counts"
     params["toolkit_version"] = _version()
     configs: dict[str, Any] = {}
     for key in ("qc", "classification", "programs", "aggregate", "spatial_features", "spatial_null", "compare_groups"):
@@ -392,22 +393,28 @@ def describe() -> WorkflowDescriptor:
         workflow_id="cycif.tabular_analysis",
         modality="CycIF",
         title="CyCIF Cell-Feature Table Analysis",
-        description="Analyze an explicitly selected MCMICRO/PIPEX segmented cell-feature table using opt-in CyCIF step06-step12 analyses.",
+        description="Analyze an explicitly selected MCMICRO segmented cell-feature table using opt-in CyCIF step06-step12 analyses.",
         stages=[
-            StageDefinition(stage_id=f"step{n:02d}", title=title, purpose=purpose, tools=tool)
-            for n, title, purpose in [
-                (6, "Intensity QC", "Background correction and marker SNR QC."),
-                (7, "Cell classification", "Explicitly configured per-core marker gating."),
-                (8, "Program scoring", "Explicitly configured per-cell program scores."),
-                (9, "Aggregation", "Aggregate raw cells to imaging core or biological unit."),
-                (10, "Spatial features", "Descriptive spatial features; no inferential claim."),
-                (11, "Spatial null", "Explicit selected-pair spatial label permutation."),
-                (12, "Group comparison", "Two-group comparison on direct biological-unit aggregates only."),
+            StageDefinition(
+                stage_id=f"step{n:02d}",
+                title=title,
+                purpose=purpose,
+                tools=tool,
+                implementations=[FunctionReference(source_file=source_file, function_name=function_name, role="Optional configured analysis step")],
+            )
+            for n, title, purpose, source_file, function_name in [
+                (6, "Intensity QC", "Background correction and marker SNR QC.", "spatial_omics_toolkit/cycif/qc.py", "step06_qc_filter_intensities"),
+                (7, "Cell classification", "Explicitly configured per-core marker gating.", "spatial_omics_toolkit/cycif/classify.py", "step07_classify_cells"),
+                (8, "Program scoring", "Explicitly configured per-cell program scores.", "spatial_omics_toolkit/cycif/classify.py", "step08_score_programs"),
+                (9, "Aggregation", "Aggregate raw cells to imaging core or biological unit.", "spatial_omics_toolkit/cycif/aggregate.py", "step09_aggregate_per_core"),
+                (10, "Spatial features", "Descriptive spatial features; no inferential claim.", "spatial_omics_toolkit/cycif/spatial_features.py", "step10_spatial_features"),
+                (11, "Spatial null", "Explicit selected-pair spatial label permutation.", "spatial_omics_toolkit/cycif/spatial_null.py", "step11_spatial_null"),
+                (12, "Group comparison", "Two-group comparison on direct biological-unit aggregates only.", "spatial_omics_toolkit/cycif/compare.py", "step12_compare_groups"),
             ]
         ],
-        input_description="An exact existing MCMICRO/PIPEX cell-feature CSV/TSV/Parquet path under the selected modality folder or run artifacts; explicit column map; confirmed core-to-specimen mapping in project_samples.csv.",
+        input_description="An exact existing MCMICRO cell-feature CSV/TSV/Parquet path under the selected modality folder or run artifacts; explicit column map; confirmed core-to-specimen mapping in project_samples.csv.",
         parameter_fields=[
-            ParameterField(name="feature_table_path", label="MCMICRO/PIPEX cell-feature table", kind="path", required=True, section="Input", help_text="Select the exact existing CSV/TSV/Parquet table produced upstream by MCMICRO or PIPEX; no filename inference, raw-image processing, or segmentation is performed."),
+            ParameterField(name="feature_table_path", label="MCMICRO cell-feature table", kind="path", required=True, section="Input", help_text="Select the exact existing CSV/TSV/Parquet table produced upstream by MCMICRO; no filename inference, raw-image processing, or segmentation is performed."),
             ParameterField(name="columns.acquisition_group", label="Acquisition-group column", kind="select", required=True, dynamic_choices_key="input_table_columns", section="Input", help_text="Exact source table column identifying acquisition group."),
             ParameterField(name="columns.core_id", label="Core/imaging-field column", kind="select", required=True, dynamic_choices_key="input_table_columns", section="Input", help_text="Exact source table column identifying the core used for mapping and per-core operations."),
             ParameterField(name="columns.specimen_id", label="Existing specimen_id column", kind="select", dynamic_choices_key="input_table_columns", section="Specimen mapping", help_text="Optional. Use only with the separate explicit use_specimen_id_column confirmation; otherwise map every exact core_id through core_to_specimen."),
@@ -475,7 +482,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
     mapping = {"source_table": params["feature_table_path"], "acquisition_group_column": acquisition_col, "core_column": core_col, "mapping_confirmation": True, "project_samples_csv": params["annotation_csv"]}
     # The explicit group field is preserved as source provenance; core mapping is never inferred from names.
     (out_root / "input_mapping.json").write_text(json.dumps(mapping, indent=2), encoding="utf-8")
-    warnings = list(check.warnings) + ["step13_pseudobulk not run: continuous MCMICRO/PIPEX intensities are not raw counts.", "step10 spatial feature outputs are descriptive only."]
+    warnings = list(check.warnings) + ["step13_pseudobulk not run: continuous MCMICRO intensities are not raw counts.", "step10 spatial feature outputs are descriptive only."]
     if "spatial_null" in params.get("enabled_stages", []):
         warnings.append("All step11 selected-pair p-values are retained as Exploratory because selection-adjusted full-pipeline correction is not implemented, regardless of pre-specification confirmation.")
     stages: list[StageEvent] = []

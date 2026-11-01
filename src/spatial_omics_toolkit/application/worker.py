@@ -64,6 +64,30 @@ def _mapping_blockers(request: RunRequest, groups: Any) -> list[str]:
     return []
 
 
+def _example_input_blockers(request: RunRequest, inventory: dict[str, Any]) -> list[str]:
+    """Bind a fixed example recipe to the raw assets prepared for that recipe."""
+    authorization = request.parameters.get("example_authorization")
+    if authorization is None:
+        return []
+    if not isinstance(authorization, dict) or authorization.get("scope") != "technical_qc_only":
+        return ["The example authorization has no valid technical-QC scope."]
+    expected_files = authorization.get("source_files")
+    if not isinstance(expected_files, list) or not expected_files:
+        return ["The example recipe is missing its prepared raw-source checksums."]
+    expected: dict[str, str] = {}
+    for item in expected_files:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str) or not isinstance(item.get("sha256"), str):
+            return ["The example raw-source checksum record is malformed."]
+        expected[str(Path(item["path"]).resolve())] = item["sha256"]
+    observed: dict[str, str] = {}
+    for item in inventory.get("files", []):
+        if isinstance(item, dict) and isinstance(item.get("path"), str) and isinstance(item.get("sha256"), str):
+            observed[str(Path(item["path"]).resolve())] = item["sha256"]
+    if observed != expected:
+        return ["Example inputs differ from the prepared source receipt. Restore the original example files or prepare and review a new example; no analysis ran."]
+    return []
+
+
 def _render_pdf_previews(pdf_path: Path, preview_dir: Path) -> tuple[list[Path], list[str], str | None]:
     warnings: list[str] = []
     try:
@@ -215,6 +239,12 @@ def run_worker(run_dir: Path) -> int:
             if old_hashes != new_hashes or input_inventory.get("annotation_csv_sha256") != current_inventory.get("annotation_csv_sha256"):
                 raise ValueError("Input files changed after QC review; source hashes no longer match the inventory receipt")
             atomic_json(run_dir / "inputs" / f"revalidation-attempt-{request.parameters.get('review_attempt', 1)}.json", current_inventory)
+        example_blockers = _example_input_blockers(request, input_inventory)
+        if example_blockers:
+            message = "; ".join(example_blockers)
+            emit(StageEvent(stage_id="input_integrity", status="BLOCKED", message=message))
+            update_status(run_dir, "BLOCKED", message, current_stage="input_integrity")
+            return 2
         if not preflight.ready:
             for blocker in preflight.blockers:
                 emit(StageEvent(stage_id="preflight", status="BLOCKED", message=blocker))

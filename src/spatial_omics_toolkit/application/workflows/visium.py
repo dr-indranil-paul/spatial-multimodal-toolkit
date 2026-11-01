@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from spatial_omics_toolkit.application.contracts import (
+    FunctionReference,
     PreflightResult,
     ParameterField,
     RunRequest,
@@ -346,6 +347,11 @@ def describe() -> WorkflowDescriptor:
                         documentation_url="https://spatialdata.scverse.org/projects/io/en/latest/generated/spatialdata_io.visium_hd.html",
                     ),
                 ],
+                implementations=[
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_discover_bundles", role="Find supported Visium bundles"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_build_visium_hd_reader_view", role="Prepare exact native HD reader inputs"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Load native Visium/HD bundle with published readers"),
+                ],
             ),
             StageDefinition(
                 stage_id="count-qc",
@@ -364,6 +370,10 @@ def describe() -> WorkflowDescriptor:
                         role="Bounded spatial display rendering",
                         documentation_url="https://matplotlib.org/",
                     ),
+                ],
+                implementations=[
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Compute native count QC"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_write_count_preview", role="Render bounded spatial count preview"),
                 ],
             ),
         ],

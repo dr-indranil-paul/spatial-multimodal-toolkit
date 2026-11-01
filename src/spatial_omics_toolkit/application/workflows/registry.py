@@ -9,7 +9,7 @@ from typing import Any
 from spatial_omics_toolkit.application.contracts import WorkflowDescriptor
 
 
-SUPPORTED_MODALITIES = frozenset({"CycIF", "HS", "FLIM", "H&E", "Visium"})
+SUPPORTED_MODALITIES = frozenset({"CycIF", "HS", "FLIM", "H&E", "Visium", "Integration"})
 
 
 def register_workflow(module: ModuleType) -> WorkflowDescriptor:

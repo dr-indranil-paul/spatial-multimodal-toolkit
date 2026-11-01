@@ -197,7 +197,7 @@ qualified incrementally behind stable contracts.
 |   |-- numerical/
 |   |-- e2e/
 |   `-- performance/
-|-- fixtures/                 # tiny non-biological golden fixtures
+|-- fixtures/                 # local research fixtures; excluded from publication
 |-- docs/
 |-- CHANGELOG.md
 |-- CITATION.cff

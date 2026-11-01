@@ -27,13 +27,29 @@ The CSV provides reviewed project-wide metadata. It does not replace modality-sp
 
 ## Inputs and workflow behavior
 
-Select the project root, the complete folder for **one modality**, and the project output root. Keep modalities in separate folders and run them independently. Use the typed workflow controls to specify acquisition-specific settings. The app does not guess a modality from folder names, discover biological identity by filename, or silently apply an example marker panel.
+Select the project root, one complete modality folder, and the project output root for an own-data workflow. Use the server-side Browse dialogs to choose any folder or CSV under `/home/groups/EmiliLab/pauli`; the dialogs support direct path entry and folder navigation. **Input mode** opens with a prepared local example. These defaults are fixed technical-QC examples, not biological analyses: groups remain `UNMAPPED`, and clicking **Run example** explicitly authorizes the displayed technical scope. Example runs use separate prepared metadata, need no Project-page setup, and remain isolated from own-data state and history. The worker guards execution against source-hash changes since preparation. Own-data mode remains separate; supply reviewed metadata before submitting a biological run, and the app does not invent sample identities. Keep modalities in separate folders and run them independently. The app does not guess a modality from folder names, discover biological identity by filename, or silently apply an example marker panel.
 
-The UI follows the Python app at `02_projects_current/02_cfms_emt/05_companion_website`: a persistent sidebar radio router provides **Home**, **Project & Data**, one page per implemented modality, **Review & Submit**, and **Run & Reports**. Each assay page uses a left-controls/right-details layout with nested **Overview**, **Stages & tools**, and **Limitations** tabs. The navy/blue hero, pale background, white cards, compact type scale, and table-first run summaries make inputs, tools, and results easier to scan; exact paths, receipts, and logs remain expandable.
+For CycIF raw-CZI intake, the default quickstart uses one `r1` file under `fixtures/example_data/quickstart/cycif/data/slide_a1/`. It has no OME sidecar, so intake reports **PARTIAL** QC and does not convert or segment by default. The larger `fixtures/example_data/cycif_raw/` view remains available separately; it groups the full copied raw collection by slide using relative symlinks.
+
+The sidebar provides **Home**, **Project**, each modality by its full name, and optional **Integration**. Open a modality to complete the analysis in one place: **Data & settings**, **Run**, **Quality control**, **Results**, and **Files**. There are no separate global submission or reporting pages. Project stores shared metadata; each modality retains its own input folder, output location, settings, checks, and selected run. The Run section checks the current configuration, requests any required specimen-mapping confirmation, and repeats preflight before enabling submission. Switching modality does not clear another modality's work.
+
+Home has direct project and modality entry points. Advanced execution settings, software versions, source identities, and complete provenance are available on demand rather than occupying the main analysis controls. CyCIF still configures intake, optional conversion, registration, marker export, and MCMICRO segmentation independently; choosing a settings stage does not launch a job.
+
+Open the collapsed **Methods & source** panel to inspect the selected processing step or result. It shows the function's purpose, script, current definition line, and a copyable full path. When a step uses several functions, select one rather than scan a long technical listing. Saved-run software/source identifiers are shown separately from current source definitions; unavailable locations are never guessed. Results initially selects a report or figure before operational files; the Files section retains the complete bundle.
+
+For saved FLIM and native-HS runs, the panel also reads script SHA-256 identifiers from their known, bounded workflow receipts inside that run bundle. These entries are labelled workflow-level, not step-specific call traces, and are not recomputed from current source files. Raw input-file hashes are not presented as code identities. Files retains the complete provenance record.
+
+A worker-generated PDF-preview stage identifies the actual preview renderer in `application/worker.py`, rather than an unrelated analytical function. The original report's processing step contains its analytical-method references.
+
+**Integration is optional and exploratory.** Its prepared example previews a translation of a serial-section H&E moving image against a CycIF r1 DAPI reference. This is not validated biological pairing, an accepted alignment, or generic joint analysis. CyCIF registration aligns acquisition rounds within CyCIF; it does not establish cross-modal alignment. Each modality can be run and reviewed on its own.
+
+If a source checkpoint was **WARNING**, continuation requires explicit confirmation that its QC report was reviewed. The child run records that decision and the warning stages, and the source limitations remain visible in the resumed run.
+
+Each CyCIF raw-start inventories the complete selected raw folder and the current `project_samples.csv`. Continuation is a separate child run, not a mutation of the source bundle. Intake checkpoints can be reused to continue at **conversion** or **registration**: conversion requires `conversion.enabled=true`; registration requires `registration.enabled=true` and intentionally skips the optional, independent conversion deliverable. Both boundaries reuse intake without rerunning step01, then execute the configured stage and later configured stages. Later supported boundaries are **after registration** (continue at export using a durable per-scene handoff containing registered TIFF stacks and transform/round metadata) and **after export** (continue at segmentation from the verified composite and marker map). All continuation runs re-inventory raw files and project metadata, verify checkpoint artifact hashes, stage settings, tool identity, source workflow, and each required upstream stage's successful terminal status. The parent run itself may be BLOCKED or FAILED after a completed checkpoint; that does not invalidate a separately verified successful upstream stage. The child writes `resume_receipt.json` with parent lineage, start stage, reuse event and reused artifact hashes, and the source bundle remains unchanged. `checkpoint_receipts.json` binds successful stage artifacts to the raw-input fingerprint and resolved stage settings; legacy, incomplete, or stale checkpoints cannot be reused. Warning checkpoints remain reusable only after explicit review confirmation. Do not add an outer Nextflow orchestrator for this CyCIF module: the stages are user-configured and review-gated, and explicit checkpoint receipts and child-run lineage remain necessary regardless of runner; Nextflow `-resume` would not replace raw-input and artifact verification. MCMICRO continues to invoke its existing Nextflow pipeline. Evaluate other modules independently, and adopt Nextflow only when nontrivial parallel execution, resource isolation, or external-tool orchestration justifies the added runtime. Each run remains one guarded Python worker/SLURM submission. CyCIF tabular analysis retains its existing interface.
 
 Project root, modality folder, and project CSV paths must be lexically under `/home/groups/EmiliLab/pauli`; outputs must resolve under the same workspace. For group-hosted inputs outside that tree (for example, the ChinData Visium bundles), use an approved symlink beneath the selected project folder rather than entering the external path directly. The input inventory records the path and symlink target.
 
-If a workflow reports acquisition groups, map each group to an exact `specimen_id` or leave it `UNMAPPED` for technical QC only, then explicitly confirm the mapping. Unmapped groups cannot enter biological aggregation or comparison. The H&E image-intake and CyCIF no-group paths require explicit confirmation of technical-QC-only scope. Workflows with their own reviewed source records still enforce those records; an empty mapping interface does not imply identity was inferred.
+For own-data workflows that report acquisition groups, map each exact `group_key` to a physical `specimen_id` and its independent `biological_unit_id`, or leave it `UNMAPPED` for technical QC only, then explicitly confirm the mapping. An optional core map CSV has columns `group_key,specimen_id` and may also include `slide_id`, `core_id`, or `section_id`. Keys must match exactly and group keys must be unique; map only reviewed, known sample IDs. Any change invalidates checks and requires checking again. The UI downloads the populated group keys after **Check inputs**. Per-core analysis requires core-indexed inputs; the app does not detect cores or infer a core count. Unmapped groups cannot enter biological aggregation or comparison. The H&E image-intake and CyCIF no-group paths require explicit confirmation of technical-QC-only scope. Workflows with their own reviewed source records still enforce those records; an empty mapping interface does not imply identity was inferred.
 
 Some steps intentionally stop as **BLOCKED** or **QC_PENDING** when required tools, settings, calibrations, assignments, or human review are missing. A successful earlier step does not imply later stages ran. Tool names, versions, resolved settings, warnings, QC records, and limitations are recorded with the run.
 
@@ -51,6 +67,8 @@ Each submission creates a unique run folder beneath the selected output root:
   mapping_receipt.json       # explicit mapping or QC-only scope receipt
   inputs/project_samples.csv # read-only snapshot used by this run
   inputs/manifest.json       # hashed inputs, inventory scope, and snapshot receipt
+  checkpoint_receipts.json   # CyCIF raw-stage outputs, hashes, settings, and tool identity
+  resume_receipt.json        # continuation child lineage and reused artifacts, when applicable
   review_request.json        # when a workflow pauses for user review
   review_decision.json      # after explicit QC review
   review_decisions.jsonl    # review history
@@ -100,6 +118,30 @@ Use the institute-approved compute allocation and access/tunnel method for the S
 ## Developer checks
 
 Run tests and application smoke checks only on an allocated compute node with the approved Python environment. The test suite lives in `tests/unit/`. Before reporting a run, inspect its `status.json`, stage events, warnings, logs, and artifacts; do not infer success from job submission alone.
+
+## Local example data
+
+The prepared local defaults are created with `python -m spatial_omics_toolkit.application.examples --prepare`. Sources are local fixtures in `fixtures/example_data/`; the prepared catalog stores relative paths and source provenance, and avoids hashing all raw data during UI rendering. A source-hash guard runs in the worker. Examples use their own explicit technical-QC metadata and require no Project-page setup; they do not change or bypass own-data metadata and review requirements.
+
+| Example | Prepared technical-QC scope and limits |
+| --- | --- |
+| **CycIF** | One `r1` raw-CZI slide intake. Missing OME sidecar means **PARTIAL** QC. No conversion or segmentation by default. |
+| **HS** | Native 20-band CZI intensity and phasor QC. |
+| **FLIM** | Real SDT, all-native-block counts and decay QC only—not lifetimes or manual block review. |
+| **H&E** | Biopsy SVS thumbnail QC. |
+| **Visium** | Real official tiny HD, 16 µm QC only—not biological conclusions. The public source is [10x Genomics Visium HD example data](https://www.10xgenomics.com/support/software/space-ranger/latest/resources/visium-hd-example-data), licensed CC BY 4; ZIP MD5 `7cab710801d3776125a7aa5a792cd7e4`. |
+| **Integration** | Exploratory serial-section H&E moving ↔ CycIF r1 DAPI-reference translation preview—not validated biological pairing, accepted alignment, or generic joint analysis. |
+
+Private microscopy originals remain user-restricted and are not redistributed; local fixture copies are available only in the local workspace. Relative symlinks provide quickstart views of those copies. The old collaborator `05` folder is only a placeholder and is not used; `05_spatial_omics/visium_hd_tiny` is the real Visium source. These local data do not make the toolkit a self-contained public example-data package.
+
+For a prepared example, **Single sample** describes one specimen, **Multiple samples** multiple specimens, and **TMA layout** a tissue microarray layout. In all cases the reviewed mapping is `group_key` → physical `specimen_id` → independent `biological_unit_id`. For own data, provide a core map when the workflow needs one; technical example defaults keep groups `UNMAPPED`.
+
+<details>
+<summary>Methods &amp; source</summary>
+
+The prepared-example definitions are in `src/spatial_omics_toolkit/application/examples.py`; current workflow definitions are in `src/spatial_omics_toolkit/application/workflows/`, with modality methods in their referenced source modules. A run's recorded implementation version/source hash receipt describes the code identity recorded for that historical run, not necessarily the code currently in the checkout. Consult the recorded run artifacts for its method and provenance.
+
+</details>
 
 ## Existing Python API
 

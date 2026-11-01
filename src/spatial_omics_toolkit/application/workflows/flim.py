@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from spatial_omics_toolkit.application.contracts import (
+    FunctionReference,
     ParameterField,
     PreflightResult,
     RunRequest,
@@ -100,26 +101,29 @@ def describe() -> WorkflowDescriptor:
         workflow_id=WORKFLOW_ID,
         modality="FLIM",
         title="Raw FLIM SDT QC and phasor analysis",
-        description="Runs the canonical source-bound SDT workflow as an isolated FLIM modality job; does not perform HS pairing or cross-modal analysis.",
+        description="Runs the canonical source-bound SDT workflow as an isolated FLIM modality job; raw_qc stops after native intensity/decay diagnostics, while full mode continues through frequency-dependent phasor analysis. Does not perform HS pairing or cross-modal analysis.",
         stages=[
-            StageDefinition(stage_id="flim_inventory", title="SDT inventory", purpose="Hash and inspect all supported SDT blocks while retaining source block and acquisition metadata.", tools=[source]),
-            StageDefinition(stage_id="flim_raw_qc", title="Raw decay QC", purpose="Summarize native count and decay data with the canonical chunked decoder.", tools=[source, plots]),
-            StageDefinition(stage_id="flim_phasor", title="Physical-time phasors", purpose="Compute phasors using an explicitly sourced acquisition frequency.", tools=[source, plots]),
-            StageDefinition(stage_id="flim_count_mask", title="Count mask", purpose="Apply the declared minimum-total-count support threshold.", tools=[source, plots]),
-            StageDefinition(stage_id="flim_filter", title="Optional phasor filter", purpose="Optionally apply the canonical median-coordinate filter.", tools=[source, plots]),
-            StageDefinition(stage_id="flim_lifetimes", title="Apparent lifetime conversion", purpose="Convert final phasors to apparent phase/modulation lifetimes; calibrated status is recorded only after measured-reference calibration.", tools=[source, plots]),
-            StageDefinition(stage_id="flim_reference_raw_qc", title="Measured-reference raw QC", purpose="Summarize native reference decay/count measurements without treating an unmeasured target as calibrated.", tools=[source]),
-            StageDefinition(stage_id="flim_reference_phasor", title="Measured-reference phasors", purpose="Compute explicit-frequency reference phasors for the supplied measured standard.", tools=[source]),
-            StageDefinition(stage_id="flim_reference_calibration", title="Optional measured-reference calibration", purpose="Apply phasor calibration only from a supplied measured SDT reference with explicit block, lifetime, provenance, and matching-settings confirmation.", tools=[source]),
+            StageDefinition(stage_id="flim_inventory", title="SDT inventory", purpose="Hash and inspect all supported SDT blocks while retaining source block and acquisition metadata.", tools=[source], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="inspect_flim_inputs", role="Inspect source SDT inventory")], event_stage_ids=["flim_block_review", "flim_block_selection_policy"]),
+            StageDefinition(stage_id="flim_raw_qc", title="Raw decay QC", purpose="Summarize native count and decay data with the canonical chunked decoder.", tools=[source, plots], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="select_flim_blocks", role="Select reviewed blocks"), FunctionReference(source_file="external:clinical_roi_flim.py", function_name="summarize_flim_qc", role="Summarize raw count/decay data"), FunctionReference(source_file="external:clinical_roi_flim_plots.py", function_name="plot_flim_qc", role="Render raw QC diagnostics")], event_stage_ids=["flim_raw_qc_plots"]),
+            StageDefinition(stage_id="flim_phasor", title="Physical-time phasors", purpose="Compute phasors using an explicitly sourced acquisition frequency.", tools=[source, plots], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="compute_flim_phasors", role="Compute physical-time phasors"), FunctionReference(source_file="external:clinical_roi_flim_plots.py", function_name="plot_flim_phasors", role="Render phasor diagnostics")], event_stage_ids=["flim_phasor_plots"]),
+            StageDefinition(stage_id="flim_count_mask", title="Count mask", purpose="Apply the declared minimum-total-count support threshold.", tools=[source, plots], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="mask_flim_phasors", role="Apply declared count mask"), FunctionReference(source_file="external:clinical_roi_flim_plots.py", function_name="plot_flim_mask", role="Render mask diagnostics")], event_stage_ids=["flim_count_mask_plots"]),
+            StageDefinition(stage_id="flim_filter", title="Optional phasor filter", purpose="Optionally apply the canonical median-coordinate filter.", tools=[source, plots], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="filter_flim_phasors", role="Optional phasor filtering"), FunctionReference(source_file="external:clinical_roi_flim_plots.py", function_name="plot_flim_filter", role="Render filter diagnostics")], event_stage_ids=["flim_filter_plots"]),
+            StageDefinition(stage_id="flim_lifetimes", title="Apparent lifetime conversion", purpose="Convert final phasors to apparent phase/modulation lifetimes; calibrated status is recorded only after measured-reference calibration.", tools=[source, plots], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="compute_flim_lifetimes", role="Compute apparent lifetimes"), FunctionReference(source_file="external:clinical_roi_flim_plots.py", function_name="plot_flim_lifetimes", role="Render lifetime diagnostics")], event_stage_ids=["flim_lifetime_plots"]),
+            StageDefinition(stage_id="flim_reference_raw_qc", title="Measured-reference raw QC", purpose="Summarize native reference decay/count measurements without treating an unmeasured target as calibrated.", tools=[source], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="inspect_flim_inputs", role="Inspect measured-reference SDT"), FunctionReference(source_file="external:clinical_roi_flim.py", function_name="summarize_flim_qc", role="Summarize reference count/decay data")]),
+            StageDefinition(stage_id="flim_reference_phasor", title="Measured-reference phasors", purpose="Compute explicit-frequency reference phasors for the supplied measured standard.", tools=[source], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="compute_flim_phasors", role="Compute measured-reference phasors")]),
+            StageDefinition(stage_id="flim_reference_calibration", title="Optional measured-reference calibration", purpose="Apply phasor calibration only from a supplied measured SDT reference with explicit block, lifetime, provenance, and matching-settings confirmation.", tools=[source], implementations=[FunctionReference(source_file="external:clinical_roi_flim.py", function_name="calibrate_flim_phasors", role="Apply explicitly confirmed measured-reference calibration")]),
         ],
-        input_description="A complete FLIM modality directory containing .sdt files. All other files are listed as unsupported. Block indices, acquisition-frequency value and provenance, count threshold, and optional filter/calibration choices are explicit parameters.",
+        input_description="A complete FLIM modality directory containing .sdt files. All other files are listed as unsupported. analysis_scope=raw_qc can use reviewed block selection or the explicit all-recorded-block technical-QC authorization; neither requires frequency or calibration. Full mode requires documented frequency provenance.",
         output_description="Run-local inventory, stage receipts, native-array objects, summary tables, diagnostic PDFs, and provenance manifest under the run directory.",
         parameter_fields=[
-            ParameterField(name="block_indices", label="Reviewed SDT blocks", kind="multiselect", dynamic_choices_key="flim_block_indices", section="SDT inventory", stage_id="flim_inventory", help_text="Run the worker-side inventory first, review its block/acquisition metadata and choose blocks explicitly. No default-all selection is made."),
+            ParameterField(name="analysis_scope", label="Analysis scope", kind="select", default="full", choices=["raw_qc", "full"], section="Analysis", help_text="raw_qc performs raw intensity/decay technical QC and stops before frequency-dependent phasor or lifetime calculation. Use explicit reviewed block selection, or opt into all recorded blocks with both technical-QC authorization fields. No detector/cell identity is inferred. full preserves the complete workflow."),
+            ParameterField(name="block_indices", label="Reviewed SDT blocks", kind="multiselect", dynamic_choices_key="flim_block_indices", section="SDT inventory", stage_id="flim_inventory", help_text="For selected-block mode, inspect the worker inventory and choose blocks explicitly; no default-all selection is made. All-block raw QC is a separate explicit technical-QC policy."),
+            ParameterField(name="raw_qc_all_blocks", label="Inspect all recorded blocks for technical QC", kind="bool", default=False, section="SDT inventory", stage_id="flim_inventory", help_text="Opt in only for analysis_scope=raw_qc. Processes all blocks recorded in the native SDT inventory for technical count/decay QC; no detector identity is assumed and no phasors/lifetimes are computed."),
+            ParameterField(name="technical_qc_authorized", label="Authorize all-block technical QC", kind="bool", default=False, section="SDT inventory", stage_id="flim_inventory", help_text="Required together with raw_qc_all_blocks. Explicitly authorizes raw count/decay inspection of all recorded blocks, not detector selection or biological analysis."),
             ParameterField(name="blocks_review_confirmed", label="Confirm reviewed block selections", kind="bool", default=False, section="SDT inventory", stage_id="flim_inventory", help_text="Required on resume after reviewing the worker-generated block inventory."),
-            ParameterField(name="frequency_mhz", label="Acquisition frequency", kind="float", required=True, min_value=0.000001, unit="MHz", section="Phasor analysis", stage_id="flim_phasor", help_text="Required before inventory submission. Use an explicitly documented acquisition frequency; it is never inferred from decay-window length."),
-            ParameterField(name="frequency_provenance", label="Frequency source / provenance", kind="text", required=True, section="Phasor analysis", stage_id="flim_phasor", help_text="Required before inventory submission; record acquisition settings source and rationale."),
-            ParameterField(name="minimum_total_counts", label="Minimum total counts per pixel", kind="float", required=True, default=0.0, min_value=0, unit="counts", section="Count mask", stage_id="flim_count_mask"),
+            ParameterField(name="frequency_mhz", label="Acquisition frequency", kind="float", required=False, min_value=0.000001, unit="MHz", section="Phasor analysis", stage_id="flim_phasor", help_text="Required only for analysis_scope=full after block review. Use an explicitly documented acquisition frequency; it is never inferred from decay-window length."),
+            ParameterField(name="frequency_provenance", label="Frequency source / provenance", kind="text", required=False, section="Phasor analysis", stage_id="flim_phasor", help_text="Required only for analysis_scope=full after block review; record acquisition settings source and rationale."),
+            ParameterField(name="minimum_total_counts", label="Minimum total counts per pixel", kind="float", required=False, default=0.0, min_value=0, unit="counts", section="Count mask", stage_id="flim_count_mask", help_text="Used only by full phasor analysis; raw_qc does not apply a count mask."),
             ParameterField(name="filter_enabled", label="Apply median phasor-coordinate filter", kind="bool", default=False, section="Filter", stage_id="flim_filter", help_text="Optional canonical filter; does not replace or alter raw source data."),
             ParameterField(name="filter_size", label="Median filter size", kind="int", default=3, min_value=1, section="Filter", stage_id="flim_filter", advanced=True, help_text="Must be odd; used only when filtering is enabled."),
             ParameterField(name="filter_repeat", label="Median filter repeats", kind="int", default=1, min_value=1, section="Filter", stage_id="flim_filter", advanced=True, help_text="Used only when filtering is enabled."),
@@ -138,7 +142,7 @@ def describe() -> WorkflowDescriptor:
             "Uncalibrated outputs are apparent lifetimes and are never labelled calibrated.",
             "Measured reference calibration is available only when a separate reference SDT and measured lifetime are supplied with matching-settings confirmation.",
             "The adapter does not infer HS+FLIM pairs, publish a pairing manifest, or perform cross-modal analysis.",
-            "Worker inventory ends in QC_PENDING; analyzed blocks require explicit selection and a reviewer- and inventory-receipt-bound decision.",
+            "Inventory normally ends in QC_PENDING; explicit selected-block analyses require reviewer- and inventory-receipt-bound decisions. Only the opt-in raw_qc all-recorded-block technical inspection bypasses individual block review and remains limited to counts/decays.",
             "The source workflow owns method implementation; this adapter does not reproduce scientific calculations.",
         ],
     )
@@ -162,6 +166,31 @@ def _stat_signature(path: Path) -> dict[str, int]:
     stat = path.stat()
     return {"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
+def _validate_review_decision(
+    review_decision_path: Path,
+    inventory: dict[str, Any],
+    *,
+    selected_blocks: list[int],
+    run_id: str,
+    review_attempt: int,
+) -> None:
+    if not review_decision_path.is_file():
+        raise ValueError("Review confirmation artifact is missing; block selection cannot proceed.")
+    review_decision = json.loads(review_decision_path.read_text())
+    reviewed_blocks = review_decision.get("block_indices")
+    if review_decision.get("blocks_review_confirmed") is not True or not isinstance(reviewed_blocks, list) or sorted(reviewed_blocks) != sorted(selected_blocks):
+        raise ValueError("Review decision does not match the explicitly selected SDT blocks.")
+    if review_decision.get("flim_inventory_receipt_sha256") != _sha256(Path(inventory["receipt_path"])):
+        raise ValueError("Review decision is not bound to the canonical FLIM inventory receipt.")
+    reviewer = review_decision.get("reviewer") or review_decision.get("user")
+    review_timestamp = review_decision.get("timestamp") or review_decision.get("reviewed_at")
+    if not isinstance(reviewer, str) or not reviewer.strip() or not isinstance(review_timestamp, str) or not review_timestamp.strip():
+        raise ValueError("Review decision must record the reviewer/user and timestamp.")
+    if review_decision.get("run_id") != run_id:
+        raise ValueError("Review decision belongs to a different workflow run.")
+    if review_decision.get("review_attempt") != review_attempt:
+        raise ValueError("Review decision belongs to a different review attempt.")
+
 
 
 def preflight(request: RunRequest) -> PreflightResult:
@@ -175,6 +204,21 @@ def preflight(request: RunRequest) -> PreflightResult:
     if missing_sources:
         blockers.append("Canonical FLIM source is unavailable: " + ", ".join(str(source_directory / name) for name in missing_sources))
     parameters = request.parameters
+    analysis_scope = parameters.get("analysis_scope", "full")
+    if analysis_scope not in {"raw_qc", "full"}:
+        blockers.append("analysis_scope must be 'raw_qc' or 'full'.")
+    raw_qc_all_blocks = parameters.get("raw_qc_all_blocks", False)
+    technical_qc_authorized = parameters.get("technical_qc_authorized", False)
+    if not isinstance(raw_qc_all_blocks, bool) or not isinstance(technical_qc_authorized, bool):
+        blockers.append("raw_qc_all_blocks and technical_qc_authorized must be booleans.")
+        raw_qc_all_blocks = False
+        technical_qc_authorized = False
+    if raw_qc_all_blocks and analysis_scope != "raw_qc":
+        blockers.append("raw_qc_all_blocks is permitted only with analysis_scope='raw_qc'.")
+    if raw_qc_all_blocks and not technical_qc_authorized:
+        blockers.append("All-block raw QC requires explicit technical_qc_authorized=true.")
+    if technical_qc_authorized and not raw_qc_all_blocks:
+        blockers.append("technical_qc_authorized applies only when raw_qc_all_blocks=true.")
     raw_block_indices = parameters.get("block_indices")
     selected_blocks: list[int] | None = None
     if isinstance(raw_block_indices, str):
@@ -187,13 +231,16 @@ def preflight(request: RunRequest) -> PreflightResult:
         selected_blocks = raw_block_indices or None
     if selected_blocks is not None and (not selected_blocks or any(not isinstance(i, int) or isinstance(i, bool) or i < 0 for i in selected_blocks) or len(set(selected_blocks)) != len(selected_blocks)):
         blockers.append("block_indices must be unique nonnegative integer SDT block indices.")
+    if raw_qc_all_blocks and selected_blocks is not None:
+        blockers.append("Do not combine raw_qc_all_blocks with an explicit block_indices selection.")
     if selected_blocks is not None:
         frequency = parameters.get("frequency_mhz")
         frequency_source = parameters.get("frequency_provenance")
-        if not isinstance(frequency, (int, float)) or isinstance(frequency, bool) or not math.isfinite(float(frequency)) or frequency <= 0:
-            blockers.append("A positive acquisition frequency in MHz is required after block review; it is never inferred from decay-window timing.")
-        if not isinstance(frequency_source, str) or not frequency_source.strip():
-            blockers.append("frequency_provenance is required after block review.")
+        if analysis_scope == "full":
+            if not isinstance(frequency, (int, float)) or isinstance(frequency, bool) or not math.isfinite(float(frequency)) or frequency <= 0:
+                blockers.append("A positive acquisition frequency in MHz is required for full analysis after block review; it is never inferred from decay-window timing.")
+            if not isinstance(frequency_source, str) or not frequency_source.strip():
+                blockers.append("frequency_provenance is required for full analysis after block review.")
     else:
         frequency = parameters.get("frequency_mhz")
         frequency_source = parameters.get("frequency_provenance")
@@ -252,6 +299,7 @@ def preflight(request: RunRequest) -> PreflightResult:
     if not isinstance(review_attempt, int) or isinstance(review_attempt, bool) or review_attempt < 0:
         blockers.append("review_attempt must be a nonnegative integer.")
     resolved = {
+        "analysis_scope": analysis_scope,
         "input_files": [str(path) for path in inputs],
         "acquisition_groups": [
             {
@@ -264,6 +312,8 @@ def preflight(request: RunRequest) -> PreflightResult:
         "input_stat": {str(path): _stat_signature(path) for path in inputs} if inputs else {},
         "unsupported_files": unsupported,
         "block_indices": selected_blocks,
+        "raw_qc_all_blocks": raw_qc_all_blocks,
+        "technical_qc_authorized": technical_qc_authorized,
         "blocks_review_confirmed": parameters.get("blocks_review_confirmed", False),
         "frequency_mhz": frequency,
         "frequency_provenance": frequency_source,
@@ -404,7 +454,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
         else:
             prior_inventory_path.write_text(json.dumps({"records": inventory["records"], "unsupported_files": params["unsupported_files"], "source_sha256": observed_hashes, "inventory_receipt_path": str(Path(inventory["receipt_path"]).resolve()), "inventory_receipt_sha256": _sha256(Path(inventory["receipt_path"])), "pairing_manifest": pairing_evidence}, indent=2, default=str))
             artifacts.append(str(prior_inventory_path))
-        if params["block_indices"] is None or params.get("blocks_review_confirmed") is not True:
+        if not params["raw_qc_all_blocks"] and (params["block_indices"] is None or params.get("blocks_review_confirmed") is not True):
             by_block: dict[int, list[dict[str, Any]]] = {}
             for row in inventory["records"]:
                 by_block.setdefault(int(row["block_index"]), []).append(row)
@@ -436,28 +486,54 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             emit(pending)
             events.append(pending)
             return WorkflowResult(status="QC_PENDING", stages=events, artifacts=sorted(set(artifacts)), warnings=warnings + ["No scientific analysis ran; explicit block selection and review are required."], review_request=review_request)
-        review_decision_path = root / "review_decision.json"
-        if not review_decision_path.is_file():
-            raise ValueError("Review confirmation artifact is missing; block selection cannot proceed.")
-        review_decision = json.loads(review_decision_path.read_text())
-        reviewed_blocks = review_decision.get("block_indices")
-        if review_decision.get("blocks_review_confirmed") is not True or not isinstance(reviewed_blocks, list) or sorted(reviewed_blocks) != sorted(params["block_indices"]):
-            raise ValueError("Review decision does not match the explicitly selected SDT blocks.")
-        if review_decision.get("flim_inventory_receipt_sha256") != _sha256(Path(inventory["receipt_path"])):
-            raise ValueError("Review decision is not bound to the canonical FLIM inventory receipt.")
-        reviewer = review_decision.get("reviewer") or review_decision.get("user")
-        review_timestamp = review_decision.get("timestamp") or review_decision.get("reviewed_at")
-        if not isinstance(reviewer, str) or not reviewer.strip() or not isinstance(review_timestamp, str) or not review_timestamp.strip():
-            raise ValueError("Review decision must record the reviewer/user and timestamp.")
-        if review_decision.get("run_id") != str(request.run_id):
-            raise ValueError("Review decision belongs to a different workflow run.")
-        if review_decision.get("review_attempt") != params.get("review_attempt"):
-            raise ValueError("Review decision belongs to a different review attempt.")
-        artifacts.append(str(review_decision_path))
-        inventory = flim.select_flim_blocks(inventory, params["block_indices"])
+        if params["raw_qc_all_blocks"]:
+            selected_blocks = sorted({int(row["block_index"]) for row in inventory["records"]})
+            if not selected_blocks:
+                raise ValueError("Canonical SDT inventory contains no recorded blocks for technical QC.")
+            inventory_receipt_path = Path(inventory["receipt_path"]).resolve()
+            policy_path = root / "selection_policy.json"
+            policy = {
+                "schema": "flim_raw_qc_selection_policy_v1",
+                "policy": "all recorded blocks; no detector identity assumed",
+                "analysis_scope": "raw_qc",
+                "technical_qc_authorized": True,
+                "block_indices": selected_blocks,
+                "source_sha256": observed_hashes,
+                "inventory_receipt_path": str(inventory_receipt_path),
+                "inventory_receipt_sha256": _sha256(inventory_receipt_path),
+                "selection_semantics": "select every unique native block index recorded by canonical inventory across the exact input SDT files",
+                "scope_limit": "raw count/decay technical QC only; no phasor, lifetime, calibration, or biological detector interpretation",
+            }
+            policy_path.write_text(json.dumps(policy, indent=2, sort_keys=True) + "\n")
+            artifacts.append(str(policy_path))
+            policy_event = StageEvent(stage_id="flim_block_selection_policy", status="SUCCEEDED", message="Authorized all-recorded-block technical QC policy bound to source hashes and canonical inventory receipt", tool_versions=tools, parameters={"policy": policy["policy"], "block_indices": selected_blocks}, artifacts=[str(policy_path)])
+            emit(policy_event)
+            events.append(policy_event)
+        else:
+            selected_blocks = params["block_indices"]
+            review_decision_path = root / "review_decision.json"
+            _validate_review_decision(review_decision_path, inventory, selected_blocks=selected_blocks, run_id=str(request.run_id), review_attempt=params.get("review_attempt"))
+            artifacts.append(str(review_decision_path))
+        inventory = flim.select_flim_blocks(inventory, selected_blocks)
         raw = run_stage("flim_raw_qc", "Summarizing raw counts and decays", lambda: flim.summarize_flim_qc(inventory, object_dir=objects / "raw_qc", table_dir=tables), {})
+        from spatial_omics_toolkit.application.plotting import ensure_arial
+        ensure_arial()
         qc_plots = plots.plot_flim_qc(raw, diagnostics / "raw_qc")
         record_plots("flim_raw_qc_plots", "Raw count and decay diagnostics", qc_plots)
+        if params["analysis_scope"] == "raw_qc":
+            receipt = root / "adapter_receipt.json"
+            receipt.write_text(json.dumps({
+                "workflow_id": WORKFLOW_ID,
+                "analysis_scope": "raw_qc",
+                "run_id": str(request.run_id),
+                "source_sha256": {name: _sha256(_source_dir() / name) for name in ("clinical_roi_flim.py", "clinical_roi_flim_plots.py")},
+                "parameters": params,
+                "tool_versions": tools,
+                "interpretation": "Technical raw intensity/decay QC only; no physical-time phasors, masks, filtering, calibration, or lifetime conversion were run.",
+                "artifacts": sorted(set(artifacts)),
+            }, indent=2, default=str))
+            artifacts.append(str(receipt))
+            return WorkflowResult(status="SUCCEEDED", stages=events, artifacts=sorted(set(artifacts)), warnings=warnings)
         phasor = run_stage("flim_phasor", "Computing physical-time phasors", lambda: flim.compute_flim_phasors(inventory, object_dir=objects / "phasors", table_dir=tables, frequency_mhz=float(params["frequency_mhz"]), frequency_provenance=str(params["frequency_provenance"])), {"frequency_mhz": params["frequency_mhz"], "frequency_provenance": params["frequency_provenance"]})
         phasor_plot = plots.plot_flim_phasors(phasor, diagnostics / "phasors")
         record_plots("flim_phasor_plots", "Physical-time phasor diagnostics", phasor_plot)

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from spatial_omics_toolkit.application.contracts import (
+    FunctionReference,
     ParameterField,
     PreflightResult,
     RunRequest,
@@ -35,9 +36,9 @@ def describe() -> WorkflowDescriptor:
         title="Clinical ROI hyperspectral audit and phasors",
         description="Runs the existing clinical HS source workflow against its strict final manifest and evidence ledgers, retaining separate TMA analyses.",
         stages=[
-            StageDefinition(stage_id="metadata_audit", title="Metadata audit", purpose="Validate reviewed HS assignment evidence and audit native metadata and exact bands.", tools=[source_tool]),
-            StageDefinition(stage_id="source_phasors", title="Source-bound phasors", purpose="Compute per-TMA first-harmonic summaries with the canonical exact-band map and integrity cache.", tools=[source_tool]),
-            StageDefinition(stage_id="exploratory", title="Exploratory diagnostics", purpose="Optional per-TMA filter or GMM sensitivity using the declared source APIs; IDs are not tissue classes.", tools=[source_tool]),
+            StageDefinition(stage_id="metadata_audit", title="Metadata audit", purpose="Validate reviewed HS assignment evidence and audit native metadata and exact bands.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="load_final_analysis_manifest", role="Load reviewed source manifest"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="audit_spectral_channel_maps", role="Audit exact spectral bands")]),
+            StageDefinition(stage_id="source_phasors", title="Source-bound phasors", purpose="Compute per-TMA first-harmonic summaries with the canonical exact-band map and integrity cache.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_spectral_phasors", role="Compute per-TMA source-bound phasors")]),
+            StageDefinition(stage_id="exploratory", title="Exploratory diagnostics", purpose="Optional per-TMA filter or GMM sensitivity using the declared source APIs; IDs are not tissue classes.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_filter_sensitivity", role="Optional filter sensitivity"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_gmm_sensitivity", role="Optional GMM sensitivity")]),
         ],
         input_description="Project tree with canonical source module, strict final HS manifest, assignment manifest, queue, selection ledger, settings manifest, and the exact reviewed raw acquisitions referenced by them.",
         output_description="Run-local metadata and band-map tables, separate per-TMA phasor summaries/figures/receipts, cache and cache-event log.",

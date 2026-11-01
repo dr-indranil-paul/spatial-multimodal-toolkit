@@ -200,18 +200,45 @@ def test_check_dimensions_extracts_size_fields():
 # ── step01: report table never invents a default, and returns structured problems ──
 
 
-def test_build_intake_report_skips_per_slide_count_when_not_specified(tmp_path):
+def test_build_intake_report_skips_unavailable_metadata_checks(tmp_path: Path) -> None:
     raw_dir = _make_raw_dir(tmp_path, GOOD_FILENAMES)
     df_files = scan_raw_images(str(raw_dir))
     df_parsed, unparsed = parse_filenames(df_files)
-    config = RawImageIntakeConfig()  # expected_files_per_slide=None by default
+    config = RawImageIntakeConfig()
     report = build_intake_report(
         df_files, df_parsed, unparsed, [], pd.DataFrame(), [], config=config
     )
-    row = report[report["Check"] == "Per-slide file count"].iloc[0]
-    assert row["Status"] == "—"  # not silently defaulted to a fabricated pass/fail
+    count_row = report[report["Check"] == "Per-slide file count"].iloc[0]
+    channel_row = report[report["Check"].str.startswith("Channel count")].iloc[0]
+    assert count_row["Status"] == "—"
+    assert channel_row["Status"] == "—"
+    assert "check skipped" in channel_row["Detail"]
 
 
+
+def test_step01_empty_raw_folder_is_reported_and_strict_mode_blocks(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    result = step01_scan_intake(
+        str(raw_dir),
+        str(tmp_path / "reports"),
+        generate_html_report=False,
+        strict=False,
+        verbose=False,
+    )
+    checks = result.checks.set_index("Check")
+    assert checks.loc["Raw image files found", "Status"] == "⚠"
+    assert checks.loc["Filename parsing", "Status"] == "⚠"
+    assert checks.loc["Channel count (5/5)", "Status"] == "—"
+    assert checks.loc["All 6 expected rounds present", "Status"] == "—"
+    with pytest.raises(RuntimeError):
+        step01_scan_intake(
+            str(raw_dir),
+            str(tmp_path / "strict-reports"),
+            generate_html_report=False,
+            strict=True,
+            verbose=False,
+        )
 def test_build_intake_report_flags_unparsed_and_missing_as_structured_problems(
     tmp_path,
 ):

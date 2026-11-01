@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import copy
 import csv
 import hashlib
 import json
-import subprocess
-from html import escape
+import os
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -17,14 +17,13 @@ from spatial_omics_toolkit.application.intake import (
     PROJECT_SAMPLE_COLUMNS,
     lexical_path_is_under,
     read_project_samples,
-    sha256_file,
 )
-from spatial_omics_toolkit.application.scheduler import read_run_status
-from spatial_omics_toolkit.application.service import prepare_request, submit_request, submit_review_decision
-from spatial_omics_toolkit.application.workflows.registry import list_workflows, registry_warnings
+from spatial_omics_toolkit.application.service import prepare_request, submit_request
+from spatial_omics_toolkit.application.workflows.registry import list_workflows
+from spatial_omics_toolkit.application.examples import ExampleSpec
 
 
-st.set_page_config(page_title="Spatial Toolkit", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Spatial Toolkit", layout="wide", initial_sidebar_state="auto")
 
 
 def child_directories(path_text: str) -> list[str]:
@@ -37,46 +36,184 @@ def child_directories(path_text: str) -> list[str]:
         return []
 
 
+def _restore_widget_state(widget_key: str, state_key: str, default: Any = "") -> None:
+    if widget_key not in st.session_state:
+        st.session_state[widget_key] = st.session_state.get(state_key, default)
+
+
+def _persist_widget_state(widget_key: str, state_key: str) -> None:
+    st.session_state[state_key] = st.session_state.get(widget_key, "")
+
+def _set_modality_section(modality: str, section: str) -> None:
+    st.session_state[f"workspace_section_state_{modality}"] = section
+    st.session_state[f"workspace_section_{modality}"] = section
+
+
+def _submit_example_from_ui(modality: str) -> None:
+    from spatial_omics_toolkit.application.examples import submit_example
+
+    try:
+        request, job_id = submit_example(
+            modality,
+            Path(str(st.session_state[f"example_output_{modality}"])).expanduser(),
+            authorize_technical_qc=True,
+        )
+        active = dict(st.session_state.get("active_example_run_dirs", {}))
+        selected = dict(st.session_state.get("selected_example_run_dirs", {}))
+        active[modality] = str(request.run_dir)
+        selected[modality] = str(request.run_dir)
+        st.session_state["active_example_run_dirs"] = active
+        st.session_state["selected_example_run_dirs"] = selected
+        st.session_state[f"pending_example_run_selection_{modality}"] = str(request.run_dir)
+        st.session_state[f"active_example_workflow_{modality}"] = request.workflow_id
+        st.session_state[f"example_submission_notice_{modality}"] = f"Example submitted ({job_id}). Follow progress and results in this workspace."
+        st.session_state.pop(f"example_submission_error_{modality}", None)
+        _set_modality_section(modality, "Run")
+    except Exception as exc:
+        st.session_state[f"example_submission_error_{modality}"] = f"Example submission failed: {exc}"
+        st.session_state.pop(f"example_submission_notice_{modality}", None)
+
+
+
+def _normalized_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path.expanduser())))
+
+
+def open_server_path_picker(kind: str, target_key: str, initial_path: str) -> None:
+    """Open the picker without changing its destination until the user chooses."""
+    allowed_root = _normalized_path(Path(ALLOWED_ROOT))
+    current = _normalized_path(Path(initial_path))
+    if kind in {"file", "czi"} and current.is_file():
+        current = current.parent
+    if not current.is_dir() or not lexical_path_is_under(current, allowed_root):
+        current = allowed_root
+    st.session_state["_server_picker_kind"] = kind
+    st.session_state["_server_picker_target"] = target_key
+    st.session_state[f"_server_picker_directory_{target_key}"] = str(current)
+    st.session_state[f"_server_picker_path_{target_key}"] = str(current)
+    st.session_state[f"_server_picker_pending_{target_key}"] = str(st.session_state.get(target_key, ""))
+    st.session_state["_server_picker_open"] = True
+    st.rerun()
+
+
+def _close_server_path_picker() -> None:
+    st.session_state["_server_picker_open"] = False
+
+
+@st.dialog("Choose a folder or file", on_dismiss=_close_server_path_picker)
+def server_path_picker_dialog() -> None:
+    """Browse server paths under the institute workspace without uploading data."""
+    allowed_root = _normalized_path(Path(ALLOWED_ROOT))
+    kind = str(st.session_state.get("_server_picker_kind", "directory"))
+    target_key = str(st.session_state.get("_server_picker_target", ""))
+    browse_key = f"_server_picker_directory_{target_key}"
+    current = _normalized_path(Path(str(st.session_state.get(browse_key, allowed_root))))
+    if not current.is_dir() or not lexical_path_is_under(current, allowed_root):
+        current = allowed_root
+        st.session_state[browse_key] = str(current)
+    path_key = f"_server_picker_path_{target_key}"
+    pending_key = f"_server_picker_pending_{target_key}"
+    navigation_key = f"_server_picker_next_path_{target_key}"
+    if navigation_key in st.session_state:
+        st.session_state[path_key] = str(st.session_state.pop(navigation_key))
+    if target_key == "project_root_path":
+        st.info("Choose the main folder for your study. Keep the reviewed sample sheet here and select the modality-specific data in its workspace. Your original files will not be moved or overwritten.")
+    elif target_key == "annotation_csv":
+        st.info("Choose your completed sample-sheet CSV. It needs biological_unit_id, specimen_id, condition, and tissue_source columns, with one row per physical specimen or section. TMA group_key values belong in the separate core map, not this sample sheet.")
+    elif target_key.startswith("tma_core_map_path_"):
+        st.info("Choose a reviewed core map linking the app's acquisition group_key to specimen_id in your sample sheet. Obtain the exact group keys by running Check inputs first. Optional slide_id, core_id, and section_id columns describe the TMA layout; they do not define independent biological replicates.")
+    elif kind == "czi":
+        st.info("Choose one native .czi source image. Its metadata records channel information and physical scale; sources remain read-only.")
+    elif target_key.startswith("modality_folder_"):
+        source_modality = target_key.removeprefix("modality_folder_")
+        input_guidance = {
+            "CycIF": "For raw images, choose a folder with one subfolder per slide containing its CZI acquisition rounds. For cell-feature analysis, choose the folder containing your segmented-cell table. The selected analysis type determines which inputs are read.",
+            "HS": "Choose the folder containing the original hyperspectral CZI files. Native-file QC reads one selected CZI; the clinical workflow additionally requires its reviewed acquisition manifests.",
+            "FLIM": "Choose the folder containing the original .sdt measurements. Raw count/decay QC does not require a lifetime calibration; full analysis also needs reviewed blocks and documented acquisition settings.",
+            "H&E": "Choose a folder containing .svs, .czi, .tif, or .tiff tissue images. Whole-slide files and extracted core images are accepted for image intake/QC; loading a whole TMA slide does not automatically detect its cores.",
+            "Visium": "Choose a Space Ranger outs folder, or a folder containing those bundles. The counts matrix and spatial positions must stay together. FASTQ files or a tissue image alone are not sufficient.",
+        }
+        st.info(input_guidance.get(source_modality, "Choose the folder containing the original acquisition files for this modality."))
+        st.caption("The app reads these inputs and writes results to a separate output folder.")
+    else:
+        st.info("Choose the requested folder or CSV file. Sources are read-only; analysis outputs go to the configured output location.")
+    st.caption(f"Current folder: `{current}`")
+    st.caption("Browse locations under the workspace, or paste an existing path. Nothing is uploaded or changed.")
+    path_text = st.text_input("Location", key=path_key)
+    typed_path = _normalized_path(Path(path_text))
+    if st.button("Open entered path", key=f"_server_picker_go_{target_key}"):
+        valid_suffix = ".csv" if kind == "file" else ".czi"
+        if not lexical_path_is_under(typed_path, allowed_root):
+            st.error("Choose a path under the institute workspace.")
+        elif kind in {"file", "czi"} and typed_path.is_file() and typed_path.suffix.lower() == valid_suffix:
+            st.session_state[target_key] = str(typed_path)
+            st.session_state[pending_key] = str(typed_path)
+            st.session_state["_server_picker_open"] = False
+            st.rerun()
+        elif typed_path.is_dir():
+            st.session_state[browse_key] = str(typed_path)
+            st.session_state[navigation_key] = str(typed_path)
+            st.rerun()
+        else:
+            expected = "a .czi file" if kind == "czi" else "a .csv file" if kind == "file" else "a directory"
+            st.error(f"Enter an existing directory or {expected}.")
+    if current != allowed_root and st.button("Parent folder", key=f"_server_picker_parent_{target_key}"):
+        parent = str(current.parent)
+        st.session_state[browse_key] = parent
+        st.session_state[navigation_key] = parent
+        st.rerun()
+    show_hidden = st.checkbox("Show hidden folders", key="_server_picker_show_hidden", value=False)
+    with st.container(height=320, border=True):
+        directories = [
+            path for path in child_directories(str(current))
+            if show_hidden or not Path(path).name.startswith(".")
+        ]
+        if not directories:
+            st.caption("No subfolders here.")
+        for directory_text in directories:
+            directory = Path(directory_text)
+            if st.button(
+                f"Open {directory.name}",
+                key=f"_server_picker_open_{target_key}_{confirmation_key(str(directory))}",
+                use_container_width=True,
+            ):
+                st.session_state[browse_key] = str(directory)
+                st.session_state[navigation_key] = str(directory)
+                st.rerun()
+        if kind in {"file", "czi"}:
+            suffix = ".czi" if kind == "czi" else ".csv"
+            files = sorted(
+                path for path in current.glob(f"*{suffix}")
+                if path.is_file() and lexical_path_is_under(path, allowed_root)
+            )
+            for file_path in files:
+                if st.button(
+                    f"Choose {file_path.name}",
+                    key=f"_server_picker_file_{target_key}_{confirmation_key(str(file_path))}",
+                    use_container_width=True,
+                ):
+                    st.session_state[target_key] = str(file_path)
+                    st.session_state["_server_picker_open"] = False
+                    st.rerun()
+    pending = str(st.session_state.get(pending_key, ""))
+    if pending:
+        st.caption(f"Selection: {pending}")
+    if kind == "directory" and st.button("Choose this folder", key=f"_server_picker_choose_{target_key}"):
+        st.session_state[pending_key] = str(current)
+        st.session_state[target_key] = str(current)
+        st.session_state["_server_picker_open"] = False
+        st.rerun()
+    cancel_col, _ = st.columns([1, 3])
+    with cancel_col:
+        if st.button("Cancel", key=f"_server_picker_cancel_{target_key}"):
+            st.session_state["_server_picker_open"] = False
+            st.rerun()
 def project_samples_template() -> str:
     """Return a header-only project metadata template; never invent sample rows."""
     output = StringIO()
     writer = csv.writer(output, lineterminator="\n")
     writer.writerow((*PROJECT_SAMPLE_COLUMNS, "batch_or_block", "section_id"))
     return output.getvalue()
-
-
-def render_modality_folder_browser(project_root_text: str) -> str:
-    project_root = Path(project_root_text).expanduser().absolute()
-    if not project_root.is_dir() or not lexical_path_is_under(project_root, ALLOWED_ROOT):
-        st.info("Choose a project root under the allowed institute workspace to browse modality folders.")
-        return ""
-    browser_key = "modality_browser_path"
-    current = Path(st.session_state.get(browser_key, str(project_root))).expanduser().absolute()
-    if not lexical_path_is_under(current, project_root) or not current.is_dir():
-        current = project_root
-    st.session_state[browser_key] = str(current)
-    relative = current.relative_to(project_root)
-    st.caption(f"Folder browser: /{relative.as_posix() if str(relative) != '.' else ''}")
-    directories = child_directories(str(current))
-    selected_child = st.selectbox(
-        "Open a subfolder",
-        ["(choose a folder)", *directories],
-        key=f"browse_child_{confirmation_key(str(current))}",
-    )
-    open_column, parent_column, use_column = st.columns(3)
-    with open_column:
-        if st.button("Open selected folder", disabled=selected_child == "(choose a folder)"):
-            st.session_state[browser_key] = selected_child
-            st.experimental_rerun()
-    with parent_column:
-        can_go_parent = current != project_root
-        if st.button("Parent folder", disabled=not can_go_parent):
-            st.session_state[browser_key] = str(current.parent)
-            st.experimental_rerun()
-    with use_column:
-        if st.button("Use this folder"):
-            st.session_state["selected_modality_folder"] = str(current)
-    return str(current)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -89,6 +226,24 @@ def read_json(path: Path) -> dict[str, Any]:
 
 def confirmation_key(*parts: str) -> str:
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _signature_parameters(parameters: dict[str, Any]) -> str:
+    snapshot = copy.deepcopy(parameters)
+    core_map = snapshot.get("tma_core_map")
+    if isinstance(core_map, dict) and core_map.get("path"):
+        _, current_hash, errors = read_tma_core_map(str(core_map["path"]))
+        core_map["current_file_sha256"] = current_hash if not errors else "unavailable"
+    return json.dumps(snapshot, sort_keys=True, default=str)
+
+
+def _example_job_pending(modality: str) -> bool:
+    active_examples = st.session_state.get("active_example_run_dirs", {})
+    run_text = active_examples.get(modality) if isinstance(active_examples, dict) else None
+    if not isinstance(run_text, str) or not run_text:
+        return False
+    status = read_json(Path(run_text) / "status.json").get("status")
+    return status in {"SUBMITTED", "QUEUED", "RUNNING"}
 
 
 def preview_panel_csv(path_text: str) -> tuple[list[dict[str, str]], list[str]]:
@@ -136,6 +291,56 @@ def _set_nested(value: dict[str, Any], dotted_name: str, item: Any) -> None:
     current[parts[-1]] = item
 
 
+def _merge_missing(current: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Fill absent configuration from a parent without replacing entered values."""
+    merged = dict(current)
+    for key, value in source.items():
+        existing = merged.get(key)
+        if key not in merged:
+            merged[key] = value
+        elif isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_missing(existing, value)
+    return merged
+
+def read_tma_core_map(path_text: str) -> tuple[list[dict[str, str]], str, list[str]]:
+    required = {"group_key", "specimen_id"}
+    optional = {"slide_id", "core_id", "section_id"}
+    path = _normalized_path(Path(path_text))
+    if not path_text.strip():
+        return [], "", []
+    if not lexical_path_is_under(path, _normalized_path(Path(ALLOWED_ROOT))):
+        return [], "", ["Choose a core-map CSV within the project workspace."]
+    try:
+        if path.stat().st_size > 1024 * 1024:
+            return [], "", ["Core-map CSV exceeds the 1 MiB limit; choose the mapping table, not image or measurement data."]
+        payload = path.read_bytes()
+        reader = csv.DictReader(StringIO(payload.decode("utf-8-sig")))
+        fieldnames = reader.fieldnames or []
+        headers = set(fieldnames)
+        errors = []
+        if len(fieldnames) != len(headers):
+            errors.append("Core-map CSV column names must be unique.")
+        if not required.issubset(headers):
+            errors.append("Core-map CSV requires group_key and specimen_id columns.")
+        rows = [
+            {key: (row.get(key) or "").strip() for key in required | optional if key in headers}
+            for row in reader
+        ]
+    except (OSError, UnicodeError, csv.Error) as exc:
+        return [], "", [f"Unable to read core-map CSV: {exc}"]
+    if not rows:
+        errors.append("Core-map CSV must contain at least one reviewed mapping row.")
+    group_keys = [row.get("group_key", "") for row in rows]
+    specimen_ids = [row.get("specimen_id", "") for row in rows]
+    if any(not value for value in group_keys) or len(group_keys) != len(set(group_keys)):
+        errors.append("Core-map group_key values must be non-empty and unique.")
+    if any(not value for value in specimen_ids):
+        errors.append("Core-map specimen_id values must be non-empty.")
+    return rows, hashlib.sha256(payload).hexdigest(), errors
+
+
+def sample_map_template() -> str:
+    return "group_key,specimen_id,slide_id,core_id,section_id\n"
 def _render_parameter_field(
     field: ParameterField,
     workflow_id: str,
@@ -157,8 +362,9 @@ def _render_parameter_field(
     previous_value = _get_nested(initial, field.name)
     default = previous_value if previous_value is not None else field.default
     if field.kind in {"select", "multiselect"} and not choices and dynamic_missing:
-        st.info(f"{field.label}: run quick preflight to discover allowed options.")
-        return None, None
+        if field.name != "intake.expected_rounds":
+            st.info(f"{field.label}: run quick preflight to discover allowed options.")
+            return None, None
     if field.kind == "bool":
         return st.checkbox(label, value=bool(default), help=field.help_text, key=widget_key), None
     if field.kind in {"int", "float"}:
@@ -187,6 +393,8 @@ def _render_parameter_field(
             return parsed, f"{field.label} must be at most {field.max_value}"
         return parsed, None
     if field.kind == "select":
+        if len(choices) == 1:
+            return choices[0], None
         if not choices:
             if not field.required:
                 st.caption(f"No choices are available for optional field {field.label}; it will remain unset.")
@@ -199,7 +407,12 @@ def _render_parameter_field(
             return None, f"{field.label} requires an explicit selection" if field.required else None
         return selected, None
     if field.kind == "multiselect":
-        selected_values = st.multiselect(label, choices, default=default or [], help=field.help_text, key=widget_key)
+        if field.name == "intake.expected_rounds" and isinstance(default, (list, tuple)):
+            choices = list(dict.fromkeys([*choices, *default]))
+        selected_values = st.multiselect(
+            label, choices, default=default or [], help=field.help_text, key=widget_key,
+            accept_new_options=field.name == "intake.expected_rounds",
+        )
         if field.required and not selected_values:
             return selected_values, f"{field.label} requires at least one explicit selection"
         return selected_values, None
@@ -207,11 +420,107 @@ def _render_parameter_field(
         initial_text = str(default) if default is not None else ""
         if field.kind == "config_file":
             st.caption("Server-side configuration file path; browser uploads are disabled.")
+        if workflow_id == "integration.serial_section_alignment":
+            if st.button(f"Browse {field.label}…", key=f"browse_{widget_key}"):
+                open_server_path_picker(
+                    "czi", widget_key,
+                    str(st.session_state.get("project_root_path", "")),
+                )
         entered = st.text_input(label, value=initial_text, help=field.help_text, key=widget_key)
         if field.required and not entered.strip():
             return None, f"{field.label} is required"
         return entered.strip() or None, None
     return None, f"Unsupported parameter control kind: {field.kind}"
+
+
+def _stage_parameters_enabled(
+    descriptor: WorkflowDescriptor, field: ParameterField, parameters: dict[str, Any],
+) -> bool:
+    stage_id = field.stage_id
+    if not stage_id:
+        return True
+    if descriptor.workflow_id == "cycif-raw-czi":
+        activation = {
+            "conversion": "conversion.enabled",
+            "registration": "registration.enabled",
+            "export": "registration.enabled",
+            "segmentation": "segmentation.enabled",
+        }
+        flag = activation.get(stage_id)
+        if flag is None:
+            return True
+        flag_value = _get_nested(parameters, flag)
+        if flag_value is None:
+            flag_value = next(
+                (item.default for item in descriptor.parameter_fields if item.name == flag),
+                False,
+            )
+        return flag_value is True
+    if descriptor.modality == "FLIM":
+        if stage_id == "flim_filter":
+            return _get_nested(parameters, "filter_enabled") is True
+        if stage_id == "flim_reference_calibration":
+            return bool(str(_get_nested(parameters, "reference_calibration.path") or "").strip())
+    if descriptor.workflow_id == "cycif.tabular_analysis":
+        config_names = {
+            "step06": "qc",
+            "step07": "classification",
+            "step08": "programs",
+            "step09": "aggregate",
+            "step10": "spatial_features",
+            "step11": "spatial_null",
+            "step12": "compare_groups",
+        }
+        field_name = config_names.get(stage_id)
+        if field_name:
+            return bool(str(_get_nested(parameters, field_name) or "").strip())
+    return True
+
+
+def validate_saved_parameters(
+    descriptor: WorkflowDescriptor, parameters: dict[str, Any], discovered: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    for field in descriptor.parameter_fields:
+        if not _stage_parameters_enabled(descriptor, field, parameters):
+            continue
+        choices = field.choices
+        if field.dynamic_choices_key:
+            dynamic_choices = _get_nested(discovered, field.dynamic_choices_key)
+            if not isinstance(dynamic_choices, list):
+                continue
+            choices = dynamic_choices
+        value = _get_nested(parameters, field.name)
+        if value is None:
+            value = field.default
+        missing = value is None
+        if field.kind in {"text", "path", "config_file"}:
+            missing = not str(value or "").strip()
+        elif field.kind == "multiselect":
+            missing = not isinstance(value, list) or not value
+        elif field.kind == "select":
+            missing = value is None or value == "(Select a value)"
+        if field.required and missing:
+            errors.append(f"{field.label} is required")
+            continue
+        if value is None:
+            continue
+        if field.kind in {"int", "float"}:
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                errors.append(f"{field.label} must be numeric")
+                continue
+            if field.min_value is not None and numeric_value < field.min_value:
+                errors.append(f"{field.label} must be at least {field.min_value}")
+            if field.max_value is not None and numeric_value > field.max_value:
+                errors.append(f"{field.label} must be at most {field.max_value}")
+        elif field.kind == "select" and choices and value not in choices:
+            errors.append(f"{field.label} must be one of the available options")
+        elif field.kind == "multiselect" and isinstance(value, list) and field.name != "intake.expected_rounds":
+            if choices and any(choice not in choices for choice in value):
+                errors.append(f"{field.label} contains an unavailable option")
+    return errors
 
 
 def render_parameter_fields(
@@ -220,6 +529,8 @@ def render_parameter_fields(
     fields: list[ParameterField] | None = None,
     initial: dict[str, Any] | None = None,
     key_prefix: str = "",
+    *,
+    show_errors: bool = True,
 ) -> tuple[dict[str, Any], list[str]]:
     parameters: dict[str, Any] = {}
     errors: list[str] = []
@@ -235,17 +546,26 @@ def render_parameter_fields(
     for field in effective_fields:
         grouped.setdefault((field.section, field.advanced), []).append(field)
     for (section, advanced), section_fields in grouped.items():
-        context = st.expander(f"Advanced settings — {section}", expanded=False) if advanced else st.container()
+        context = st.expander(f"Advanced — {section}", expanded=False) if advanced else st.container()
         with context:
             if not advanced:
                 st.markdown(f"**{section}**")
             for field in section_fields:
                 value, error = _render_parameter_field(field, descriptor.workflow_id, discovered, initial or {}, key_prefix)
-                if error:
-                    errors.append(error)
-                    st.error(error)
-                elif value is not None:
+                if value is not None:
                     _set_nested(parameters, field.name, value)
+                else:
+                    dynamic_choices = _get_nested(discovered, field.dynamic_choices_key) if field.dynamic_choices_key else None
+                    dynamic_unavailable = field.dynamic_choices_key is not None and not isinstance(dynamic_choices, list)
+                    available_choices = dynamic_choices if isinstance(dynamic_choices, list) else field.choices
+                    no_choices = field.kind in {"select", "multiselect"} and not available_choices
+                    if not dynamic_unavailable and not no_choices:
+                        _set_nested(parameters, field.name, None)
+                current_parameters = _merge_missing(parameters, initial or {})
+                if error and _stage_parameters_enabled(descriptor, field, current_parameters):
+                    errors.append(error)
+                    if show_errors:
+                        st.error(error)
     return parameters, errors
 
 
@@ -264,262 +584,79 @@ def run_files(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]], dict
     except OSError:
         pass
     return metadata, events, artifacts
-
-
-def show_artifact(artifact_text: str, run_dir: Path, status: str | None = None) -> None:
-    artifact_path = Path(artifact_text).expanduser()
-    if not artifact_path.is_absolute():
-        artifact_path = run_dir / artifact_path
-    if status:
-        st.caption(f"Artifact status: {status}")
-    if not artifact_path.is_file():
-        st.caption("Full-size artifact path is listed above; unavailable for preview.")
-        return
+def cycif_parent_runs(output_root: Path) -> list[Path]:
+    run_root = output_root / "CycIF" / "runs"
     try:
-        artifact_size = artifact_path.stat().st_size
-        if artifact_size <= 8 * 1024 * 1024:
-            st.download_button(
-                "Download bounded artifact",
-                data=artifact_path.read_bytes(),
-                file_name=artifact_path.name,
-                key=f"download_{confirmation_key(str(artifact_path))}",
-            )
+        candidates = [path for path in run_root.iterdir() if path.is_dir() and (path / "run.json").is_file()]
+    except OSError:
+        return []
+    return sorted(candidates, key=lambda path: path.name, reverse=True)
+
+
+def cycif_checkpoint_boundaries(run_dir: Path) -> tuple[list[str], dict[str, str]]:
+    """Return boundaries backed by valid checkpoint receipts and successful stage events."""
+    boundaries = {
+        "conversion": ("intake",),
+        "registration": ("intake",),
+        "export": ("intake", "registration"),
+        "segmentation": ("intake", "registration", "export"),
+    }
+    reasons: dict[str, str] = {}
+    metadata = read_json(run_dir / "run.json")
+    receipts = read_json(run_dir / "checkpoint_receipts.json")
+    checkpoints = receipts.get("checkpoints", {})
+    if metadata.get("workflow_id") != "cycif-raw-czi" or receipts.get("workflow_id") != "cycif-raw-czi":
+        return [], {boundary: "Parent run is not a CyCIF raw-CZI checkpoint bundle." for boundary in boundaries}
+    _, events, _ = run_files(run_dir)
+    latest_status: dict[str, str] = {}
+    for event in events:
+        stage_id = event.get("stage_id")
+        if isinstance(stage_id, str):
+            latest_status[stage_id] = str(event.get("status", ""))
+    eligible: list[str] = []
+    for boundary, required_stages in boundaries.items():
+        invalid: str | None = None
+        for stage_id in required_stages:
+            checkpoint = checkpoints.get(stage_id) if isinstance(checkpoints, dict) else None
+            if not isinstance(checkpoint, dict) or checkpoint.get("workflow_id") != "cycif-raw-czi" or checkpoint.get("stage_id") != stage_id:
+                invalid = f"Missing valid {stage_id} checkpoint receipt."
+                break
+            latest_stage_status = latest_status.get(stage_id, "missing")
+            if latest_stage_status == "REUSED":
+                latest_stage_status = str(checkpoint.get("stage_status", latest_stage_status))
+            if latest_stage_status not in {"SUCCEEDED", "WARNING", "REUSED"}:
+                invalid = f"{stage_id} latest checkpoint event is not terminal-successful or REUSED."
+                break
+            settings = checkpoint.get("settings")
+            settings_hash = hashlib.sha256(json.dumps(settings, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            if not isinstance(settings, dict) or checkpoint.get("settings_sha256") != settings_hash:
+                invalid = f"{stage_id} checkpoint settings receipt is missing or invalid."
+                break
+            from spatial_omics_toolkit.application.workflows.cycif import _tool_identity
+            if checkpoint.get("tool_identity") != _tool_identity(stage_id):
+                invalid = f"{stage_id} checkpoint runtime/tool identity differs from this application."
+                break
+            artifacts = checkpoint.get("artifacts")
+            if not isinstance(artifacts, list) or not artifacts:
+                invalid = f"{stage_id} checkpoint has no artifact hashes."
+                break
+            for artifact in artifacts:
+                if not isinstance(artifact, dict):
+                    invalid = f"{stage_id} checkpoint contains an invalid artifact receipt."
+                    break
+                artifact_path = Path(str(artifact.get("path", ""))).expanduser()
+                digest = artifact.get("sha256")
+                if not artifact_path.is_file() or not isinstance(digest, str) or len(digest) != 64:
+                    invalid = f"{stage_id} checkpoint is missing an artifact or checksum: {artifact_path}."
+                    break
+                # Full content hashes run once in the allocated worker before reuse.
+            if invalid:
+                break
+        if invalid:
+            reasons[boundary] = invalid
         else:
-            st.caption(f"Full-size original ({artifact_size} bytes) remains on disk; browser download is capped at 8 MiB.")
-    except OSError as exc:
-        st.caption(f"Artifact unavailable: {exc}")
-        return
-    if artifact_path.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
-        return
-    try:
-        if artifact_path.stat().st_size > 8 * 1024 * 1024:
-            st.caption("Preview omitted (image exceeds the 8 MiB preview limit); full-size artifact remains on disk.")
-            return
-        from PIL import Image
-        with Image.open(artifact_path) as image:
-            if image.width > 2048 or image.height > 2048:
-                st.caption("Preview omitted (image exceeds 2048 × 2048 pixels); full-size artifact remains on disk.")
-                return
-            st.image(image, caption=artifact_path.name, use_column_width=True)
-    except (OSError, ImportError, ValueError) as exc:
-        st.caption(f"Image preview unavailable: {exc}")
-
-
-def render_qc_review(run_dir: Path, status: dict[str, Any]) -> None:
-    if status.get("status") != "QC_PENDING":
-        return
-    st.warning("Review required: scientific analysis is paused until this same run receives an explicit QC decision.")
-    review_path = Path(str(status.get("review_request_path", "review_request.json")))
-    if not review_path.is_absolute():
-        review_path = run_dir / review_path
-    review_request = read_json(review_path)
-    manifest_path = run_dir / "inputs" / "manifest.json"
-    try:
-        receipt = sha256_file(manifest_path)
-    except OSError as exc:
-        st.error(f"Cannot verify input inventory receipt: {exc}")
-        return
-    if review_request.get("run_id") != read_json(run_dir / "run.json").get("run_id") or review_request.get("inventory_receipt_sha256") != receipt:
-        st.error("Review options are stale or belong to another run. Resume is disabled until the adapter regenerates a valid review request.")
-        return
-    choices = review_request.get("block_indices")
-    if not isinstance(choices, list):
-        choices = review_request.get("choices", {}).get("block_indices", [])
-    if not isinstance(choices, list) or not choices:
-        st.error("No reviewed block choices were recorded; resume is disabled.")
-        return
-    st.caption(f"Run ID: {review_request['run_id']} · inventory receipt SHA-256: {receipt}")
-    block_details = review_request.get("block_details")
-    detail_rows: list[dict[str, Any]] = []
-    if isinstance(block_details, list):
-        for block in block_details:
-            if not isinstance(block, dict) or not isinstance(block.get("records"), list):
-                continue
-            for record in block["records"]:
-                if not isinstance(record, dict):
-                    continue
-                detail_rows.append(
-                    {
-                        "block_index": block.get("value"),
-                        "block_label": block.get("label"),
-                        "source_path": record.get("path"),
-                        "source_sha256": record.get("source_sha256"),
-                        "detector_index": record.get("detector_index"),
-                        "selection_kind": record.get("selection_kind"),
-                        "shape": record.get("shape"),
-                        "time_step_seconds": record.get("time_step_seconds"),
-                        "window_seconds": record.get("window_seconds"),
-                        "acquisition_frequency_mhz": record.get("acquisition_frequency_mhz"),
-                    }
-                )
-    with st.expander("Inspected SDT block and acquisition details", expanded=True):
-        if detail_rows:
-            st.dataframe(
-                detail_rows[:200],
-                use_container_width=True,
-                hide_index=True,
-            )
-            if len(detail_rows) > 200:
-                st.caption(f"Showing the first 200 of {len(detail_rows)} inspected records.")
-        else:
-            st.info("The adapter supplied block choices without detailed acquisition records; review the saved inventory artifact before selection.")
-    selected = st.multiselect(
-        "Select SDT block indices for analysis (no blocks are selected automatically)",
-        choices,
-        default=[],
-        key=f"review_blocks_{confirmation_key(str(run_dir), receipt)}",
-    )
-    confirmed = st.checkbox(
-        "I reviewed the inspected blocks and confirm these selected indices.",
-        key=f"review_confirmed_{confirmation_key(str(run_dir), receipt, *(str(value) for value in selected))}",
-    )
-    if selected and confirmed and st.button("Resume this run with selected blocks", type="primary"):
-        try:
-            job_id = submit_review_decision(run_dir, selected, confirmed)
-            st.success(f"Resume worker submitted as SLURM job {job_id}; run ID is unchanged.")
-        except Exception as exc:
-            st.error(f"Unable to submit QC review decision: {exc}")
-
-
-def display_run(run_dir: Path) -> None:
-    status = read_run_status(run_dir)
-    metadata, events, artifact_data = run_files(run_dir)
-    status_name = str(status.get("status", "UNKNOWN"))
-    st.subheader("Run progress")
-    status_col, run_col = st.columns([1, 3])
-    with status_col:
-        st.metric("Overall status", status_name)
-    with run_col:
-        st.caption(status.get("message", ""))
-        st.caption(f"Run directory: {run_dir.resolve()}")
-    job_id = status.get("slurm_job_id") or read_json(run_dir / "job.json").get("slurm_job_id")
-    if job_id:
-        try:
-            query = subprocess.run(["squeue", "-h", "-j", str(job_id), "-o", "%T"], capture_output=True, text=True, timeout=5, check=False)
-            queue_state = query.stdout.strip()
-            if queue_state:
-                st.caption(f"SLURM job {job_id}: {queue_state}")
-        except (OSError, subprocess.TimeoutExpired):
-            st.caption(f"SLURM job ID: {job_id}; queue state unavailable")
-
-    stage_rows = [
-        {
-            "Stage": str(event.get("stage_id", f"event-{index}")),
-            "Status": str(event.get("status", "UNKNOWN")),
-            "Message": str(event.get("message", "")),
-            "Artifacts": len(event.get("artifacts", [])) if isinstance(event.get("artifacts", []), list) else 0,
-        }
-        for index, event in enumerate(events, start=1)
-    ]
-    st.markdown("#### Stage overview")
-    if stage_rows:
-        st.dataframe(stage_rows, use_container_width=True, hide_index=True)
-    else:
-        st.info("No stage events have been recorded yet.")
-    render_qc_review(run_dir, status)
-
-    if metadata:
-        with st.expander("Run inputs and configuration", expanded=False):
-            st.json({"project": metadata.get("project"), "input": metadata.get("input"), "parameters": metadata.get("parameters")})
-            inventory_path = run_dir / "inputs" / "manifest.json"
-            if inventory_path.is_file():
-                inventory_size = inventory_path.stat().st_size
-                with st.expander("Input inventory and hash scope", expanded=False):
-                    st.code(str(inventory_path.resolve()), language=None)
-                    if inventory_size <= 8 * 1024 * 1024:
-                        input_inventory = read_json(inventory_path)
-                        input_files = input_inventory.get("files", [])
-                        st.json(
-                            {
-                                "inventory_scope": input_inventory.get("inventory_scope", "complete_modality_folder"),
-                                "recorded_entries": len(input_files) if isinstance(input_files, list) else None,
-                                "annotation_csv_sha256": input_inventory.get("annotation_csv_sha256"),
-                                "inventory_errors": input_inventory.get("inventory_errors", []),
-                            }
-                        )
-                        st.download_button(
-                            "Download complete input manifest",
-                            data=inventory_path.read_bytes(),
-                            file_name="input-manifest.json",
-                            mime="application/json",
-                            key=f"input_manifest_{confirmation_key(str(inventory_path))}",
-                        )
-                    else:
-                        st.caption(
-                            f"Manifest size is {inventory_size} bytes. It was not loaded into the app; "
-                            "use the path above to inspect or download it on the compute node."
-                        )
-            resolved_parameters = read_json(run_dir / "resolved_parameters.json")
-            if resolved_parameters:
-                st.markdown("**Resolved execution parameters**")
-                st.json(resolved_parameters)
-            mapping_receipt = read_json(run_dir / "mapping_receipt.json")
-            if mapping_receipt:
-                st.markdown("**Confirmed input-to-specimen mapping receipt**")
-                st.json(mapping_receipt)
-
-    if events:
-        with st.expander("Stage details, QC, and artifacts", expanded=False):
-            for index, event in enumerate(events, start=1):
-                stage_id = str(event.get("stage_id", f"event-{index}"))
-                stage_status = str(event.get("status", "UNKNOWN"))
-                with st.expander(f"{stage_id} — {stage_status}", expanded=stage_status in {"RUNNING", "WARNING", "FAILED", "BLOCKED", "QC_PENDING"}):
-                    st.write(event.get("message", ""))
-                    if event.get("tool_versions"):
-                        st.markdown("**Tool versions**")
-                        st.json(event["tool_versions"])
-                    if event.get("parameters"):
-                        st.markdown("**Resolved parameters**")
-                        st.json(event["parameters"])
-                    for artifact in event.get("artifacts", []):
-                        show_artifact(str(artifact), run_dir, stage_status)
-    with st.expander("Complete artifact inventory", expanded=False):
-        st.caption("Full-size files remain on disk; previews and downloads stay bounded.")
-        if isinstance(artifact_data, dict):
-            artifact_rows = [
-                {"Artifact": str(name), "Details": json.dumps(value, sort_keys=True, default=str)}
-                for name, value in artifact_data.items()
-            ]
-        elif isinstance(artifact_data, list):
-            artifact_rows = [
-                {"Artifact": str(index), "Details": json.dumps(value, sort_keys=True, default=str)}
-                for index, value in enumerate(artifact_data, start=1)
-            ]
-        else:
-            artifact_rows = []
-        if artifact_rows:
-            st.dataframe(artifact_rows, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No artifact inventory has been recorded.")
-    log_files = sorted((run_dir / "logs").glob("*")) if (run_dir / "logs").is_dir() else []
-    if log_files:
-        with st.expander("Worker logs", expanded=False):
-            for log_path in log_files:
-                if log_path.is_file():
-                    st.markdown(f"**{log_path.name}**")
-                    try:
-                        with log_path.open("rb") as stream:
-                            stream.seek(max(0, log_path.stat().st_size - 12000))
-                            log_text = stream.read().decode("utf-8", errors="replace")
-                        st.code(log_text)
-                    except OSError as exc:
-                        st.warning(f"Unable to read log: {exc}")
-
-
-def render_workflow(descriptor: WorkflowDescriptor) -> None:
-    st.header(descriptor.title)
-    st.write(descriptor.description)
-    st.write(f"**Inputs:** {descriptor.input_description}")
-    st.write(f"**Outputs:** {descriptor.output_description}")
-    if descriptor.limitations:
-        with st.expander(f"Workflow notes and limitations ({len(descriptor.limitations)})", expanded=False):
-            for limitation in descriptor.limitations:
-                st.info(limitation)
-    for index, stage in enumerate(descriptor.stages, start=1):
-        with st.expander(f"Stage {index}: {stage.title}", expanded=False):
-            st.write(stage.purpose)
-            for tool in stage.tools:
-                st.markdown(f"**{tool.name}** — version: `{tool.version}`; role: {tool.role}" + (f"; [documentation]({tool.documentation_url})" if tool.documentation_url else ""))
+            eligible.append(boundary)
+    return eligible, reasons
 
 
 def render_preflight(result: PreflightResult) -> None:
@@ -527,567 +664,1022 @@ def render_preflight(result: PreflightResult) -> None:
         for blocker in result.blockers:
             st.error(blocker)
     if result.warnings:
-        with st.expander(f"Preflight notes ({len(result.warnings)})", expanded=False):
+        with st.expander(f"Notes to review ({len(result.warnings)})", expanded=False):
             for warning in result.warnings:
                 st.warning(warning)
     if result.ready:
-        st.success("Preflight ready. Submission schedules a guarded Python worker directly through SLURM.")
-    with st.expander("Resolved preflight parameters", expanded=False):
+        st.success("Input checks passed.")
+    with st.expander("Technical check details", expanded=False):
         st.json(result.resolved_parameters)
 
 
-def render_page_hero(title: str, subtitle: str, badges: list[str] | None = None) -> None:
-    badge_markup = "".join(
-        f'<span class="hero-chip">{escape(badge)}</span>'
-        for badge in badges or []
+
+
+def _initialize_state() -> None:
+    for legacy_key in (
+        "active_workflow_id", "active_workflow_modality", "active_run_dir",
+        "view_run_directory", "preflight", "selected_modality_folder",
+    ):
+        st.session_state.pop(legacy_key, None)
+    defaults = {
+        "project_root_path": "/home/groups/EmiliLab/pauli/",
+        "output_root": "/home/groups/EmiliLab/pauli/02_projects_current/02_spatial_toolkit/runs",
+        "annotation_csv": "",
+        "active_run_dirs": {},
+        "selected_run_dirs": {},
+    }
+    for key, value in defaults.items():
+        if not str(st.session_state.get(key, "")).strip() and key not in {"active_run_dirs", "selected_run_dirs"}:
+            st.session_state[key] = value
+    for key in ("active_run_dirs", "selected_run_dirs"):
+        if not isinstance(st.session_state.get(key), dict):
+            st.session_state[key] = {}
+    root = Path(str(st.session_state["project_root_path"])).expanduser()
+    if not st.session_state.get("annotation_csv"):
+        candidate = root / "project_samples.csv"
+        st.session_state["annotation_csv"] = str(candidate) if candidate.is_file() else ""
+    for modality in ("CycIF", "HS", "FLIM", "H&E", "Visium", "Integration"):
+        path_key = f"modality_folder_{modality}"
+        if path_key not in st.session_state:
+            st.session_state[path_key] = ""
+        st.session_state[f"data_mode_{modality}"] = st.session_state.get(f"data_mode_{modality}", "example")
+        st.session_state[f"data_layout_{modality}"] = st.session_state.get(f"data_layout_{modality}", "Single sample")
+        st.session_state[f"modality_output_{modality}"] = str(
+            st.session_state.get(f"modality_output_{modality}") or st.session_state["output_root"]
+        )
+        st.session_state[f"example_output_{modality}"] = str(
+            st.session_state.get(f"example_output_{modality}")
+            or (Path(__file__).resolve().parents[2] / "runs" / "examples")
+        )
+
+
+
+def _render_example_description(example: ExampleSpec, *, compact: bool = False) -> None:
+    introductions = {
+        "CycIF": "Try one fluorescence-image acquisition from an extracted TMA core. This short example checks the file and acquisition naming, then builds an intake QC report. It does not run the full registration or cell-segmentation pipeline.",
+        "HS": "Try a hyperspectral image, where each pixel contains measurements across wavelength bands. The example produces a total-intensity image and spectral-pattern diagrams called phasor plots.",
+        "FLIM": "Try a measurement file from a fluorescence-lifetime microscope (.sdt). The example inspects every recorded block and plots photon counts and decay curves. It does not assign detector identities or calculate lifetimes without acquisition and calibration information.",
+        "H&E": "Try a stained-tissue whole-slide image (.svs). The example reads its image metadata and creates a small thumbnail you can explore without loading or changing the full-resolution slide.",
+        "Visium": "Try a small public Visium HD developer dataset. The example combines measured gene counts with their recorded spatial positions to produce count QC and a spatial preview. This downsampled teaching dataset is not intended for biological conclusions.",
+        "Integration": "Try comparing an H&E image with the DAPI fluorescence channel of a candidate neighboring section. The example uses the recorded image scales to estimate a translation and produces a before-and-after overlay for inspection.",
+    }
+    st.markdown(f"**{example.title}**")
+    st.write(introductions.get(example.modality, example.summary))
+    if not compact:
+        st.write("The input files and settings are already selected. You do not need to fill in Project or upload anything to try this example.")
+        st.markdown("**What to do:** click **Run example**, follow its progress in **Run**, then open **Quality control** and **Results**. Use **Files** to download the recorded outputs.")
+        if example.expected_outputs:
+            st.markdown("**What you will get**")
+            for output in example.expected_outputs:
+                st.markdown(f"- {output}")
+    with st.expander("About the example data and its limits", expanded=False):
+        st.write(example.input_help)
+        st.caption(f"File organization: {example.layout}")
+        for source in example.source_paths:
+            st.code(source.name, language=None)
+        for limitation in example.limitations:
+            st.write(limitation)
+        st.caption("This example creates a separate run. It does not change your project metadata, own-data settings, or original files.")
+    if example.modality == "Integration":
+        st.warning("Run example confirms these displayed candidate source files for an exploratory, translation-only comparison. It does not confirm biological pairing, same-cell correspondence, or acceptance of the resulting alignment. Inspect the overlay before drawing any conclusion.")
+
+
+def _render_project() -> None:
+    st.title("Project")
+    st.write("Set up this page when you are ready to analyse your own data. A project groups the files and sample information for one study. To explore the app first, open any modality and run its included example—no project setup is needed.")
+    left, right = st.columns([1, 1])
+    with left:
+        st.subheader("1. Choose the study folder")
+        st.write("Choose the folder containing your study's data and sample sheet. The app reads your originals; it will not move, rename, or overwrite them.")
+        if st.button("Browse project folder…", key="browse_project_root"):
+            open_server_path_picker("directory", "project_root_path", str(st.session_state["project_root_path"]))
+        root_widget = "project_root_widget"
+        _restore_widget_state(root_widget, "project_root_path")
+        st.session_state[root_widget] = str(st.session_state.get("project_root_path", ""))
+        root_text = st.text_input(
+            "Project root directory", key=root_widget,
+            on_change=_persist_widget_state, args=(root_widget, "project_root_path"),
+        )
+        root = Path(root_text).expanduser()
+        current_metadata = str(st.session_state.get("annotation_csv", ""))
+        default_path = root / "project_samples.csv"
+        old_default = str(Path(st.session_state.get("_annotation_default_root", root_text)) / "project_samples.csv")
+        if not current_metadata or current_metadata == old_default:
+            current_metadata = str(default_path) if default_path.is_file() else ""
+            st.session_state["annotation_csv"] = current_metadata
+        st.session_state["_annotation_default_root"] = str(root)
+        metadata_widget = "annotation_csv_widget"
+        st.session_state[metadata_widget] = current_metadata
+        st.subheader("2. Add the sample sheet")
+        st.write("This CSV tells the app which physical specimens and independent biological units are represented. Download the blank template, fill it with reviewed study identifiers, and select the completed file.")
+        with st.expander("How to fill in the sample sheet", expanded=False):
+            st.markdown("- **specimen_id:** a unique physical specimen or section.\n- **biological_unit_id:** the independent patient, animal, or other biological unit. Reuse it for cores or sections from the same unit.\n- **condition:** the study group or treatment supplied with your data.\n- **tissue_source:** the tissue or source material supplied with your data.")
+            st.write("For a TMA, several cores may belong to one biological unit. The core map is supplied in that modality's Data & settings; it links acquisitions to this sample sheet without treating cores as independent replicates.")
+            st.caption("Use the literal unknown only when a source value is genuinely unavailable. Unmapped acquisitions can be used for technical QC, not biological comparisons.")
+        if st.button("Browse metadata…", key="browse_project_metadata"):
+            open_server_path_picker("file", "annotation_csv", root_text)
+        st.text_input(
+            "Project sample metadata (CSV)", key=metadata_widget,
+            on_change=_persist_widget_state, args=(metadata_widget, "annotation_csv"),
+        )
+        st.download_button(
+            "Download metadata template", data=project_samples_template(),
+            file_name="project_samples.csv", mime="text/csv",
+        )
+        st.subheader("3. Choose where results are saved")
+        st.write("Choose a results folder outside the raw input folder. Each run gets a new subfolder, so earlier results remain intact. Each modality can keep its own output location.")
+        output_widget = "project_output_root_widget"
+        _restore_widget_state(output_widget, "output_root")
+        st.text_input(
+            "Default output root", key=output_widget,
+            on_change=_persist_widget_state, args=(output_widget, "output_root"),
+        )
+    with right:
+        st.subheader("Check your sample sheet")
+        annotation = Path(str(st.session_state.get("annotation_csv", ""))).expanduser()
+        if annotation.is_file():
+            rows, errors = read_project_samples(annotation)
+            for error in errors:
+                st.error(error)
+            if rows and not errors:
+                st.success(f"Sample-sheet structure checked: {len(rows)} row(s).")
+                st.caption("This check verifies the required fields, not the biological identities. Confirm those against your study records before assigning inputs to specimens.")
+                st.dataframe(rows[:200], use_container_width=True, hide_index=True)
+        else:
+            st.info("No sample sheet is selected yet. Download the template on the left, add your study's information, and choose the completed CSV. You can still run every included example without doing this.")
+
+
+def _modality_run_request(
+    descriptor: WorkflowDescriptor, parameters: dict[str, Any], modality: str,
+) -> tuple[RunRequest, PreflightResult]:
+    project_root = Path(str(st.session_state["project_root_path"])).expanduser()
+    modality_dir = Path(str(st.session_state.get(f"modality_folder_{modality}", ""))).expanduser()
+    if descriptor.workflow_id == "integration.serial_section_alignment":
+        source_text = str(parameters.get("moving_he_path", "")).strip()
+        source_path = Path(source_text).expanduser()
+        if source_text and not source_path.is_absolute():
+            source_path = project_root / source_path
+        modality_dir = source_path.resolve().parent if source_text else project_root
+    return prepare_request(
+        descriptor.workflow_id,
+        project_root,
+        Path(str(st.session_state.get("annotation_csv", ""))).expanduser(),
+        modality_dir,
+        Path(str(st.session_state[f"modality_output_{modality}"])).expanduser(),
+        parameters,
     )
-    st.markdown(
-        f"""
-        <div class="hero">
-          <div class="hero-kicker">SPATIAL OMICS WORKFLOW SUITE</div>
-          <h1>{escape(title)}</h1>
-          <p>{escape(subtitle)}</p>
-          <div class="hero-sub">{badge_markup}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+
+
+def _render_mapping(
+    descriptor: WorkflowDescriptor, request_data: dict[str, Any], result_data: dict[str, Any],
+) -> tuple[bool, bool]:
+    """Render explicit identity or QC-only confirmations for a fresh preflight."""
+    resolved = result_data.get("resolved_parameters", {})
+    groups = resolved.get("acquisition_groups", []) if isinstance(resolved, dict) else []
+    valid = isinstance(groups, list)
+    confirmed = False
+    specimen_mapping: dict[str, str] = {}
+    core_mapping: dict[str, str] = {}
+    use_specimen_column = False
+    samples, sample_errors = read_project_samples(Path(request_data["annotation_csv"]))
+    for error in sample_errors:
+        st.error(error)
+        valid = False
+    specimen_ids = list(dict.fromkeys(
+        (row.get("specimen_id") or "").strip() for row in samples
+        if (row.get("specimen_id") or "").strip()
+    ))
+    tabular_cycif = descriptor.workflow_id == "cycif.tabular_analysis"
+    manual = True
+    metadata_hash = str(resolved.get("annotation_csv_sha256", "")) if isinstance(resolved, dict) else ""
+    identity_key = confirmation_key(request_data["workflow_id"], request_data["modality_dir"], metadata_hash)
+    parameters = request_data.get("parameters", {})
+    tma_map = parameters.get("tma_core_map", {}) if isinstance(parameters, dict) else {}
+    if parameters.get("data_layout") == "Tissue microarray (TMA)" and isinstance(groups, list) and groups:
+        st.write("Match each detected acquisition to a specimen in your sample sheet. You may choose assignments below, or download this map, fill in the reviewed specimen IDs, and load it in Data & settings.")
+        map_output = StringIO()
+        map_writer = csv.writer(map_output)
+        map_writer.writerow(("group_key", "specimen_id", "slide_id", "core_id", "section_id"))
+        for group in groups:
+            if isinstance(group, dict) and isinstance(group.get("group_key"), str):
+                map_writer.writerow((group["group_key"], "UNMAPPED", "", "", ""))
+        st.download_button(
+            "Download core map for these inputs", data=map_output.getvalue(),
+            file_name="core_map_for_review.csv", mime="text/csv",
+            key=f"discovered_core_map_{descriptor.modality}",
+        )
+    if (
+        isinstance(tma_map, dict)
+        and parameters.get("data_layout") == "Tissue microarray (TMA)"
+        and tma_map.get("path")
+    ):
+        _, current_hash, map_errors = read_tma_core_map(str(tma_map["path"]))
+        discovered_keys = {
+            item.get("group_key") for item in groups
+            if isinstance(item, dict) and isinstance(item.get("group_key"), str)
+        }
+        imported_keys = {
+            row.get("group_key") for row in tma_map.get("rows", [])
+            if isinstance(row, dict)
+        }
+        if map_errors or current_hash != tma_map.get("sha256"):
+            st.error("Core-map CSV changed or is no longer valid since setup. Re-select and review the file, then check inputs again.")
+            valid = False
+        if imported_keys != discovered_keys:
+            st.error("Core-map group_key values must match the discovered acquisition groups exactly. Correct the CSV and check inputs again.")
+            valid = False
+    if descriptor.workflow_id == "integration.serial_section_alignment":
+        st.info("The moving H&E and reference fluorescence/HS files remain UNMAPPED. Choose the two source files and explicitly confirm them in Setup; this confirms candidate inputs for exploratory QC only, not biological pairing or an accepted alignment.")
+        confirmed = parameters.get("candidate_sources_confirmed") is True
+        if len(groups) != 2:
+            st.error("Integration requires exactly the two explicitly selected source files; identity mapping is not performed.")
+            valid = False
+        specimen_mapping = {
+            group.get("group_key"): "UNMAPPED"
+            for group in groups
+            if isinstance(group, dict) and isinstance(group.get("group_key"), str)
+        }
+    elif tabular_cycif and bool(resolved.get("has_specimen_id")):
+        source = st.radio(
+            "Feature-table mapping source",
+            ["Use existing specimen_id column", "Map exact core values to project specimen_id"],
+            key=f"cycif_mapping_source_{identity_key}",
+        )
+        manual = source == "Map exact core values to project specimen_id"
+    if descriptor.workflow_id == "integration.serial_section_alignment":
+        pass
+    elif tabular_cycif and not manual and bool(resolved.get("has_specimen_id")):
+        confirmed = st.checkbox(
+            "I confirm the existing specimen_id column is authoritative and matches project metadata.",
+            key=f"cycif_existing_specimen_confirmed_{confirmation_key(request_data['workflow_id'], request_data['annotation_csv'], metadata_hash, *specimen_ids)}",
+        )
+        use_specimen_column = confirmed
+        if not confirmed:
+            st.info("Confirm the existing specimen_id column before starting this run.")
+    elif groups:
+        seen: set[str] = set()
+        imported_rows = tma_map.get("rows", []) if isinstance(tma_map, dict) else []
+        imported_by_group = {
+            row.get("group_key"): row.get("specimen_id")
+            for row in imported_rows if isinstance(row, dict)
+        }
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("group_key"), str) or not group["group_key"].strip():
+                st.error("An acquisition group has no valid group key; mapping is blocked.")
+                valid = False
+                continue
+            key = group["group_key"]
+            if key in seen:
+                st.error(f"Duplicate acquisition group key: {key}")
+                valid = False
+                continue
+            seen.add(key)
+            paths = group.get("input_paths")
+            if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
+                st.error(f"Group {key} has invalid input paths.")
+                valid = False
+                paths = []
+            columns = st.columns([2, 1])
+            with columns[0]:
+                st.markdown(f"**{group.get('label', key)}**")
+                if parameters.get("data_layout") == "Tissue microarray (TMA)":
+                    st.caption(f"Core-map group_key: `{key}`")
+                with st.expander(f"Input paths · {group.get('label', key)}"):
+                    for path in paths:
+                        st.code(path, language=None)
+            with columns[1]:
+                options = ["UNMAPPED", *specimen_ids]
+                imported_value = imported_by_group.get(key)
+                selected_index = options.index(imported_value) if imported_value in options else 0
+                specimen = st.selectbox(
+                    "Project specimen",
+                    options,
+                    index=selected_index,
+                    key=f"specimen_mapping_{request_data['modality']}_{confirmation_key(request_data['workflow_id'], key, str(tma_map.get('sha256', '')))}",
+                )
+            (core_mapping if tabular_cycif else specimen_mapping)[key] = specimen
+        unmapped = [key for key, value in (core_mapping if tabular_cycif else specimen_mapping).items() if value == "UNMAPPED"]
+        if unmapped:
+            st.warning("Unmapped groups are eligible only for technical QC; specimen-level analysis remains blocked.")
+        parts = [request_data["annotation_csv"], metadata_hash, str(tma_map.get("sha256", "")), *[f"{key}={value}" for key, value in sorted((core_mapping if tabular_cycif else specimen_mapping).items())]]
+        confirmed = st.checkbox(
+            "I confirm these explicit group-to-specimen mappings, including any QC-only unmapped groups.",
+            key=f"specimen_mapping_confirmed_{request_data['modality']}_{confirmation_key(request_data['workflow_id'], *parts)}",
+        )
+    elif descriptor.workflow_id in {"he-image-intake", "cycif-raw-czi"}:
+        st.info("No acquisition groups were reported. This is a bounded technical-QC/intake run only; no specimen identity or biological comparison will be inferred.")
+        confirmed = st.checkbox(
+            "I confirm this run is technical-QC-only and will not infer sample identity.",
+            key=f"qc_only_confirmed_{request_data['modality']}_{identity_key}",
+        )
+    else:
+        st.error("No acquisition groups were returned for explicit identity mapping. Submission is blocked.")
+        valid = False
+    parameters = request_data.setdefault("parameters", {})
+    parameters.update({
+        "specimen_mapping": specimen_mapping,
+        "core_to_specimen": core_mapping,
+        "use_specimen_id_column": use_specimen_column,
+        "specimen_mapping_confirmed": confirmed,
+    })
+    resolved.update({
+        "specimen_mapping": specimen_mapping,
+        "core_to_specimen": core_mapping,
+        "use_specimen_id_column": use_specimen_column,
+        "specimen_mapping_confirmed": confirmed,
+    })
+    return valid, confirmed
+
+
+def _acquisition_contract(result_data: dict[str, Any]) -> str | None:
+    resolved = result_data.get("resolved_parameters")
+    groups = resolved.get("acquisition_groups") if isinstance(resolved, dict) else None
+    if not isinstance(groups, list):
+        return None
+    records: list[dict[str, Any]] = []
+    for group in groups:
+        if not isinstance(group, dict):
+            return None
+        records.append({
+            "group_key": group.get("group_key"),
+            "label": group.get("label"),
+            "input_paths": group.get("input_paths"),
+        })
+    records.sort(key=lambda item: str(item.get("group_key", "")))
+    return json.dumps(records, sort_keys=True, default=str)
+
+
+def _reviewed_preflight_changed(
+    original_result: dict[str, Any], current_result: dict[str, Any],
+) -> str | None:
+    original_resolved = original_result.get("resolved_parameters", {})
+    current_resolved = current_result.get("resolved_parameters", {})
+    if not isinstance(original_resolved, dict) or not isinstance(current_resolved, dict):
+        return "Preflight metadata is unavailable; run checks again."
+    if "annotation_csv_sha256" in original_resolved and (
+        current_resolved.get("annotation_csv_sha256") != original_resolved.get("annotation_csv_sha256")
+    ):
+        return "Project sample metadata changed after checks. Run checks again and review the new mapping."
+    original_groups = _acquisition_contract(original_result)
+    current_groups = _acquisition_contract(current_result)
+    if original_groups is None or current_groups is None or original_groups != current_groups:
+        return "The acquisition groups or source paths changed after checks. Run checks again before mapping."
+    return None
+
+
+def _render_cycif_continuation(descriptor: WorkflowDescriptor) -> dict[str, Any]:
+    if descriptor.workflow_id != "cycif-raw-czi":
+        return {}
+    key = f"cycif_continuation_{confirmation_key(descriptor.workflow_id)}"
+    state = st.session_state.get(key, {})
+    if not isinstance(state, dict):
+        state = {}
+    mode = st.radio(
+        "Run source", ["raw_start", "continue"],
+        format_func=lambda value: "Start from raw data" if value == "raw_start" else "Continue from a verified run",
+        horizontal=True, index=0 if state.get("mode", "raw_start") == "raw_start" else 1,
+        key=f"cycif_mode_{confirmation_key(descriptor.workflow_id)}",
     )
+    state["mode"] = mode
+    state.setdefault("parent_run_dir", "")
+    state.setdefault("start_stage", "")
+    if mode == "continue":
+        parents = cycif_parent_runs(Path(str(st.session_state[f"modality_output_{descriptor.modality}"])).expanduser())
+        choices = ["(select a CycIF run)", *[str(path) for path in parents]]
+        previous = state["parent_run_dir"]
+        selected = st.selectbox(
+            "Source run", choices, index=choices.index(previous) if previous in choices else 0,
+            key=f"cycif_parent_{confirmation_key(descriptor.workflow_id)}",
+        )
+        state["parent_run_dir"] = "" if selected == choices[0] else selected
+        eligible, reasons = cycif_checkpoint_boundaries(Path(selected)) if selected != choices[0] else ([], {})
+        boundaries = ("conversion", "registration", "export", "segmentation")
+        if eligible:
+            prior = state.get("start_stage")
+            state["start_stage"] = st.selectbox(
+                "Continue at stage", eligible,
+                index=eligible.index(prior) if prior in eligible else 0,
+                key=f"cycif_boundary_{confirmation_key(descriptor.workflow_id, selected)}",
+            )
+        else:
+            state["start_stage"] = ""
+            st.info("No verified continuation boundary is available for this source run.")
+        for boundary in boundaries:
+            if boundary not in eligible:
+                st.caption(f"{boundary}: {reasons.get(boundary, 'Requires verified source checkpoints.')}")
+        if state["parent_run_dir"] and state["start_stage"]:
+            parent = Path(state["parent_run_dir"])
+            _, events, _ = run_files(parent)
+            required = {
+                "conversion": ("intake",), "registration": ("intake",),
+                "export": ("intake", "registration"),
+                "segmentation": ("intake", "registration", "export"),
+            }.get(state["start_stage"], ())
+            latest = {event.get("stage_id"): event for event in events}
+            receipt = read_json(parent / "checkpoint_receipts.json").get("checkpoints", {})
+            warning_ids: list[str] = []
+            for stage_id in required:
+                event = latest.get(stage_id, {})
+                status = str(event.get("status", ""))
+                checkpoint = receipt.get(stage_id, {}) if isinstance(receipt, dict) else {}
+                if status == "REUSED" and isinstance(checkpoint, dict):
+                    status = str(checkpoint.get("stage_status", status))
+                if status == "WARNING":
+                    warning_ids.append(stage_id)
+            if warning_ids:
+                st.warning(f"Source checkpoints contain QC warnings: {', '.join(warning_ids)}.")
+                state["warning_review_confirmed"] = st.checkbox(
+                    "I reviewed and accept reusing these warning checkpoints.",
+                    value=bool(state.get("warning_review_confirmed", False)),
+                    key=f"cycif_warning_review_{confirmation_key(descriptor.workflow_id, selected, state['start_stage'])}",
+                )
+            else:
+                state["warning_review_confirmed"] = True
+    else:
+        state.update(parent_run_dir="", start_stage="", warning_review_confirmed=False)
+    st.session_state[key] = state
+    continuation = {"mode": mode}
+    if mode == "continue":
+        continuation.update({
+            "parent_run_dir": state["parent_run_dir"],
+            "start_stage": state["start_stage"],
+            "warning_review_confirmed": state.get("warning_review_confirmed") is True,
+        })
+    parameters = st.session_state.setdefault(f"workflow_parameters_{descriptor.workflow_id}", {})
+    parameters["continuation"] = continuation
+    return continuation
+
+
+def _render_modality(modality: str, descriptors: list[WorkflowDescriptor]) -> None:
+    from spatial_omics_toolkit.application.ui.results import render_run, select_run
+    from spatial_omics_toolkit.application.ui.presentation import MODALITY_LABELS
+    from spatial_omics_toolkit.application.ui.implementation import render_step_sources
+
+    label = MODALITY_LABELS.get(modality, modality)
+    st.title(label)
+    if not descriptors:
+        st.info("No implemented workflow is currently available for this modality.")
+        return
+    mode_key = f"data_mode_{modality}"
+    mode_state_key = f"{mode_key}_state"
+    st.session_state.setdefault(mode_key, st.session_state.get(mode_state_key, "example"))
+    if st.session_state[mode_key] not in {"example", "own"}:
+        st.session_state[mode_key] = "example"
+    mode = st.radio(
+        "Input mode", ["example", "own"], horizontal=True, key=mode_key,
+        format_func=lambda value: "Included example" if value == "example" else "Use my own data",
+        on_change=_persist_widget_state, args=(mode_key, mode_state_key),
+    )
+    example = None
+    workflow_key = f"selected_workflow_{confirmation_key(modality)}"
+    workflow_state_key = f"selected_workflow_state_{modality}"
+    if mode == "example":
+        from spatial_omics_toolkit.application.examples import get_example
+        try:
+            example = get_example(modality)
+        except Exception as exc:
+            st.error(f"Example unavailable: {exc}. Ask the toolkit administrator to prepare the file-backed example catalog; no placeholder data are used.")
+            return
+        descriptor = next(
+            (item for item in descriptors if item.workflow_id == example.workflow_id),
+            None,
+        )
+        if descriptor is None:
+            st.error("The selected file-backed example refers to a workflow that is not registered for this modality. Ask the toolkit administrator to register that example workflow.")
+            return
+    else:
+        titles = [item.title for item in descriptors]
+        if workflow_key not in st.session_state or st.session_state[workflow_key] not in titles:
+            saved_title = str(st.session_state.get(workflow_state_key, titles[0]))
+            st.session_state[workflow_key] = saved_title if saved_title in titles else titles[0]
+        if len(descriptors) > 1:
+            short_titles = {
+                "cycif-raw-czi": "Raw images",
+                "cycif.tabular_analysis": "Cell-feature table",
+            }
+            title = st.selectbox(
+                "Analysis type", titles, key=workflow_key,
+                on_change=_persist_widget_state, args=(workflow_key, workflow_state_key),
+                format_func=lambda value: next(
+                    (short_titles[item.workflow_id] for item in descriptors
+                     if item.title == value and item.workflow_id in short_titles),
+                    value,
+                ),
+            )
+        else:
+            title = titles[0]
+            st.session_state[workflow_key] = title
+            st.session_state[workflow_state_key] = title
+        descriptor = descriptors[titles.index(title)]
+    section_key = f"workspace_section_{modality}"
+    section_state_key = f"workspace_section_state_{modality}"
+    if section_key not in st.session_state:
+        st.session_state[section_key] = str(st.session_state.get(section_state_key, "Setup"))
+    section = st.radio(
+        "Workflow steps", ["Setup", "Run", "Quality control", "Results", "Files"],
+        horizontal=True, key=section_key,
+        on_change=_persist_widget_state, args=(section_key, section_state_key),
+        format_func=lambda value: "Data & settings" if value == "Setup" else value,
+        label_visibility="collapsed",
+    )
+    path_key = f"modality_folder_{modality}"
+    if section == "Setup" and mode == "example":
+        st.subheader("Start with the included example")
+        _render_example_description(example)
+        example_pending = _example_job_pending(modality)
+        if example_pending:
+            st.info("An example job is already submitted or running. Follow its status below before starting another.")
+        st.button(
+            "Run example", key=f"run_example_setup_{modality}", type="primary",
+            disabled=example_pending,
+            help="Submit the catalog's fixed technical recipe. This does not confirm biological pairing or accept candidate alignment.",
+            on_click=_submit_example_from_ui, args=(modality,),
+        )
+        submission_error = st.session_state.get(f"example_submission_error_{modality}")
+        if submission_error:
+            st.error(submission_error)
+        st.caption("Examples save their own run history. Your project files and own-data settings stay unchanged.")
+        render_step_sources(descriptor.workflow_id, key_prefix=f"example_setup_{modality}")
+        return
+    if section == "Setup" and mode == "own":
+        st.info("Use your own files below. Choose the project folder and sample metadata when requested; the source inputs are read-only and outputs are written separately.")
+    if section == "Setup":
+        layout_key = f"data_layout_{modality}"
+        layout_state_key = f"{layout_key}_state"
+        st.session_state.setdefault(layout_key, st.session_state.get(layout_state_key, "Single sample"))
+        layout = st.selectbox(
+            "Data layout", ["Single sample", "Multiple samples", "Tissue microarray (TMA)"],
+            key=layout_key, on_change=_persist_widget_state, args=(layout_key, layout_state_key),
+            help="Describes intake organization only; it does not infer specimen identity or biological replicates.",
+        )
+        tma_rows: list[dict[str, str]] = []
+        tma_hash = ""
+        tma_errors: list[str] = []
+        tma_path = ""
+        if layout == "Tissue microarray (TMA)":
+            st.write("A TMA contains several cores on one slide. Whole-slide intake gives slide-level QC; per-core analysis needs extracted or core-indexed inputs. The app does not automatically identify cores or patient identities.")
+            st.write("You can start without a core-map file. After Check inputs, download the map containing the detected group keys, enter reviewed specimen_id values from your sample sheet, and load it here. Several cores may point to the same specimen or biological unit.")
+            st.caption("Required core-map columns: group_key, specimen_id. Optional: slide_id, core_id, section_id. Leave a group UNMAPPED only for technical QC.")
+            st.download_button(
+                "Download header-only core-map CSV", data=sample_map_template(),
+                file_name="core_map_template.csv", mime="text/csv",
+            )
+            tma_path_state_key = f"tma_core_map_path_state_{modality}"
+            tma_path_widget_key = f"tma_core_map_path_widget_{modality}"
+            if tma_path_widget_key not in st.session_state:
+                st.session_state[tma_path_widget_key] = st.session_state.get(tma_path_state_key, "")
+            if st.button("Choose core-map CSV…", key=f"browse_tma_map_{modality}"):
+                open_server_path_picker("file", tma_path_widget_key, str(st.session_state.get("project_root_path", "")))
+            tma_path = st.text_input("Core-map CSV path (optional)", key=tma_path_widget_key)
+            st.session_state[tma_path_state_key] = tma_path
+            tma_rows, tma_hash, tma_errors = read_tma_core_map(tma_path)
+            for error in tma_errors:
+                st.error(error)
+            if tma_rows and not tma_errors:
+                st.dataframe(tma_rows, use_container_width=True, hide_index=True)
+        st.caption(
+            "Single sample: review each discovered group-to-specimen assignment explicitly. "
+            "Multiple samples: map every group; grouping does not infer replicate count."
+        )
+        st.subheader("Data & settings")
+        st.caption("Choose the data and settings for this analysis. Your choices are kept as you move between sections.")
+        if modality == "Integration":
+            st.info("Integration uses two explicit native .czi source files, not a folder scan. Choose the moving H&E and reference fluorescence/HS files below; their channel and physical-scale metadata are checked before translation-only QC.")
+        else:
+            if st.button("Browse modality folder…", key=f"browse_modality_{modality}"):
+                open_server_path_picker("directory", path_key, str(st.session_state.get(path_key, "")) or str(st.session_state["project_root_path"]))
+            folder_widget = f"modality_folder_widget_{modality}"
+            st.session_state[folder_widget] = str(st.session_state.get(path_key, ""))
+            st.text_input(
+                "Modality input folder", key=folder_widget,
+                on_change=_persist_widget_state, args=(folder_widget, path_key),
+            )
+            st.caption("Choose the folder that contains the original modality files; do not rename files to invent sample identities. The toolkit reads these sources and writes a separate run bundle.")
+            with st.expander("Supported inputs and an example folder pattern"):
+                st.write(descriptor.input_description)
+                st.write("Pattern: project folder → modality input folder → original acquisition files (or the workflow's documented table/image inputs). Keep original names and organization; use the review controls below to assign identity.")
+        output_key = f"modality_output_{modality}"
+        output_widget = f"modality_output_widget_{modality}"
+        st.session_state[output_widget] = str(st.session_state.get(output_key, ""))
+        with st.expander("Output location", expanded=False):
+            st.text_input(
+                "Output folder", key=output_widget,
+                on_change=_persist_widget_state, args=(output_widget, output_key),
+            )
+        previous = st.session_state.get(f"workflow_parameters_{descriptor.workflow_id}", {})
+        if not isinstance(previous, dict):
+            previous = {}
+        panel_parameters: dict[str, Any] = {}
+        panel_errors: list[str] = []
+        if modality == "CycIF" and descriptor.workflow_id != "cycif.tabular_analysis":
+            with st.expander("Marker panel and grouping confirmation", expanded=False):
+                panel_widget = "cycif_panel_csv"
+                _restore_widget_state(
+                    panel_widget, "cycif_panel_csv_state",
+                    str(_get_nested(previous, "registration.marker_panel_csv") or ""),
+                )
+                panel_text = st.text_input(
+                    "Marker panel CSV path (optional)", key=panel_widget,
+                    on_change=_persist_widget_state, args=(panel_widget, "cycif_panel_csv_state"),
+                )
+                panel_rows, panel_errors = preview_panel_csv(panel_text)
+                for error in panel_errors:
+                    st.error(error)
+                if panel_rows:
+                    st.dataframe(panel_rows, use_container_width=True, hide_index=True)
+                group_widget = f"cycif_grouping_confirmed_{confirmation_key(modality, str(st.session_state.get('annotation_csv', '')))}"
+                group_state = f"{group_widget}_state"
+                _restore_widget_state(group_widget, group_state, False)
+                panel_parameters["registration"] = {
+                    "confirmed_grouping": st.checkbox(
+                        "I confirm grouping does not infer biological identity or replicate structure.",
+                        key=group_widget, on_change=_persist_widget_state, args=(group_widget, group_state),
+                    ),
+                    "marker_panel_confirmed": False,
+                    "marker_panel_csv": None,
+                }
+                if panel_text:
+                    panel_parts = [panel_text]
+                    try:
+                        stat = Path(panel_text).expanduser().stat()
+                        panel_parts.extend((str(stat.st_size), str(stat.st_mtime_ns)))
+                    except OSError:
+                        pass
+                    panel_parameters["registration"]["marker_panel_csv"] = str(Path(panel_text).expanduser())
+                    panel_widget = f"cycif_panel_confirmed_{confirmation_key(*panel_parts)}"
+                    panel_state = f"{panel_widget}_state"
+                    _restore_widget_state(panel_widget, panel_state, False)
+                    panel_parameters["registration"]["marker_panel_confirmed"] = st.checkbox(
+                        "I reviewed this panel's zero-based channel-to-marker mapping.",
+                        key=panel_widget, on_change=_persist_widget_state, args=(panel_widget, panel_state),
+                    )
+        continuation = _render_cycif_continuation(descriptor)
+        previous = _merge_missing(panel_parameters, previous)
+        if continuation:
+            previous["continuation"] = continuation
+        preflight_state = st.session_state.get(f"preflight_{modality}")
+        discovered: dict[str, Any] = {}
+        if isinstance(preflight_state, tuple) and len(preflight_state) == 3:
+            result_candidate = preflight_state[1]
+            if isinstance(result_candidate, dict) and isinstance(result_candidate.get("resolved_parameters"), dict):
+                discovered = result_candidate["resolved_parameters"]
+        parameter_fields = descriptor.parameter_fields
+        if modality == "CycIF" and descriptor.workflow_id != "cycif.tabular_analysis":
+            parameter_fields = [
+                field for field in parameter_fields
+                if field.name not in {
+                    "registration.confirmed_grouping",
+                    "registration.marker_panel_csv",
+                    "registration.marker_panel_confirmed",
+                }
+            ]
+            stages = descriptor.stages
+            stage_ids = [stage.stage_id for stage in stages]
+            stage_key = f"cycif_stage_{confirmation_key(descriptor.workflow_id)}"
+            stage_state_key = f"cycif_stage_state_{confirmation_key(descriptor.workflow_id)}"
+            if stage_key not in st.session_state or st.session_state[stage_key] not in stage_ids:
+                saved_stage = str(st.session_state.get(stage_state_key, stage_ids[0]))
+                st.session_state[stage_key] = saved_stage if saved_stage in stage_ids else stage_ids[0]
+            selected_stage = st.radio(
+                "CycIF stages", stage_ids, horizontal=True, key=stage_key,
+                on_change=_persist_widget_state, args=(stage_key, stage_state_key),
+                format_func=lambda value: next(stage.title for stage in stages if stage.stage_id == value),
+            )
+            stage = next(stage for stage in stages if stage.stage_id == selected_stage)
+            st.caption(stage.purpose)
+            parameter_fields = [field for field in parameter_fields if field.stage_id == selected_stage]
+        parameters, errors = render_parameter_fields(
+            descriptor, discovered, fields=parameter_fields, initial=previous,
+            key_prefix=f"{confirmation_key(descriptor.workflow_id)}_",
+            show_errors=False,
+        )
+        errors.extend(panel_errors)
+        errors.extend(tma_errors)
+        if layout == "Tissue microarray (TMA)" and tma_rows and not tma_errors:
+            sample_rows, sample_read_errors = read_project_samples(Path(str(st.session_state.get("annotation_csv", ""))))
+            errors.extend(sample_read_errors)
+            for error in sample_read_errors:
+                st.error(error)
+            known_specimens = {
+                (row.get("specimen_id") or "").strip() for row in sample_rows
+                if (row.get("specimen_id") or "").strip()
+            }
+            unknown = sorted({
+                row["specimen_id"] for row in tma_rows
+                if row["specimen_id"] != "UNMAPPED" and row["specimen_id"] not in known_specimens
+            })
+            if unknown:
+                message = "Core-map specimen_id values must match project samples or be UNMAPPED: " + ", ".join(unknown)
+                errors.append(message)
+                st.error(message)
+        saved = _merge_missing(parameters, previous)
+        saved["data_layout"] = layout
+        if layout == "Tissue microarray (TMA)":
+            saved["tma_core_map"] = {
+                "path": str(Path(tma_path).expanduser()) if tma_path else "",
+                "sha256": tma_hash,
+                "rows": tma_rows,
+            }
+        else:
+            saved.pop("tma_core_map", None)
+        if continuation:
+            saved["continuation"] = continuation
+        st.session_state[f"workflow_parameters_{descriptor.workflow_id}"] = saved
+        contract_errors = validate_saved_parameters(descriptor, saved, discovered)
+        parameter_errors = [*errors, *contract_errors]
+        st.session_state[f"workflow_parameter_errors_{descriptor.workflow_id}"] = parameter_errors
+        st.session_state[f"workflow_parameters_valid_{descriptor.workflow_id}"] = not parameter_errors
+        with st.expander("Workflow details and limitations"):
+            st.write(descriptor.input_description)
+            st.write(descriptor.output_description)
+            for limitation in descriptor.limitations:
+                st.warning(limitation)
+        st.button(
+            "Continue to Run", key=f"continue_to_run_{modality}", type="primary",
+            on_click=_set_modality_section, args=(modality, "Run"),
+        )
+        render_step_sources(
+            descriptor.workflow_id,
+            stage_id=(
+                str(st.session_state[f"cycif_stage_{confirmation_key(descriptor.workflow_id)}"])
+                if descriptor.workflow_id == "cycif-raw-czi" else None
+            ),
+            key_prefix=f"own_setup_{modality}",
+        )
+        return
+
+    if section == "Run" and mode == "example":
+        st.subheader("Run")
+        st.write("Run the prepared example below. Use Refresh status to check the background job, then open Quality control and Results when outputs appear. A rerun creates a new record rather than overwriting earlier results.")
+        _render_example_description(example, compact=True)
+        submission_notice = st.session_state.get(f"example_submission_notice_{modality}")
+        if submission_notice:
+            st.success(submission_notice)
+        submission_error = st.session_state.get(f"example_submission_error_{modality}")
+        if submission_error:
+            st.error(submission_error)
+        example_pending = _example_job_pending(modality)
+        if example_pending:
+            st.info("An example job is already submitted or running. Follow its status below before starting another.")
+        st.button(
+            "Run example / rerun", key=f"run_example_again_{modality}", type="primary",
+            disabled=example_pending,
+            help="Submit the fixed technical recipe only; this does not confirm biological pairing or accept an alignment.",
+            on_click=_submit_example_from_ui, args=(modality,),
+        )
+        run_dir = select_run(
+            modality, {example.workflow_id},
+            Path(str(st.session_state[f"example_output_{modality}"])).expanduser(),
+            state_scope="example",
+        )
+        if run_dir is not None:
+            render_run(Path(run_dir), "run")
+        else:
+            st.info("No example run yet. Run the example above to see its live status and results.")
+        return
+    if section == "Run":
+        st.subheader("Run")
+        integration_workflow = descriptor.workflow_id == "integration.serial_section_alignment"
+        st.write(
+            "First checks inspect the complete input and workflow settings. Then review the selected source pair's explicit confirmation; no specimen identity is mapped. Start creates a background job, with progress and figures in this section."
+            if integration_workflow else
+            "First checks inspect the complete input and workflow settings. Then review each detected group-to-specimen assignment and confirm the analysis scope. Start creates a background job; its status and figures remain in this Run section."
+        )
+        if not integration_workflow and not str(st.session_state.get(path_key, "")).strip():
+            st.info("Next: choose this modality's input folder in Data & settings.")
+        parameters = st.session_state.get(f"workflow_parameters_{descriptor.workflow_id}", {})
+        if not isinstance(parameters, dict):
+            parameters = {}
+        parameter_valid = bool(st.session_state.get(f"workflow_parameters_valid_{descriptor.workflow_id}", False))
+        if not parameter_valid:
+            for error in st.session_state.get(f"workflow_parameter_errors_{descriptor.workflow_id}", []):
+                st.error(str(error))
+        with st.expander("Before you run", expanded=False):
+            root_ready = Path(str(st.session_state.get("project_root_path", ""))).expanduser().is_dir()
+            input_ready = (
+                bool(parameters.get("moving_he_path") and parameters.get("reference_fluorescence_path"))
+                if integration_workflow else
+                Path(str(st.session_state.get(path_key, ""))).expanduser().is_dir()
+            )
+            metadata_ready = Path(str(st.session_state.get("annotation_csv", ""))).expanduser().is_file()
+            output_ready = bool(str(st.session_state.get(f"modality_output_{modality}", "")).strip())
+            for label_text, ready in (
+                ("Project folder", root_ready),
+                ("Project sample metadata", metadata_ready),
+                ("Selected source files" if integration_workflow else "Modality input folder", input_ready),
+                ("Settings", parameter_valid),
+                ("Output location", output_ready),
+            ):
+                st.write(f"{'✓' if ready else '○'} {label_text}")
+            st.caption("Fresh preflight verifies the full input and workflow contract; Integration checks explicit files without specimen mapping. Other workflows require reviewed mapping or QC-only scope confirmation.")
+        if not metadata_ready or not root_ready:
+            st.info("Add your project folder and sample metadata before starting an analysis.")
+            st.button(
+                "Open Project", key=f"open_project_from_{modality}", type="primary",
+                on_click=lambda: st.session_state.__setitem__("spatial_page", "Project"),
+            )
+        if not integration_workflow and (not str(st.session_state.get(path_key, "")).strip() or not input_ready):
+            st.button(
+                "Choose input data", key=f"choose_inputs_from_{modality}",
+                on_click=_set_modality_section, args=(modality, "Setup"),
+            )
+        if st.button(
+            "Check inputs", key=f"check_inputs_{modality}",
+            type="secondary" if st.session_state.get(f"preflight_{modality}") else "primary",
+            disabled=not (
+                root_ready and input_ready and metadata_ready and output_ready
+                and (integration_workflow or bool(str(st.session_state.get(path_key, "")).strip()))
+            ),
+        ):
+            st.session_state.pop(f"mapped_preflight_{modality}", None)
+            try:
+                if descriptor.workflow_id == "cycif-raw-czi" and parameters.get("continuation", {}).get("mode") == "continue" and (
+                    not parameters.get("continuation", {}).get("parent_run_dir")
+                    or not parameters.get("continuation", {}).get("start_stage")
+                    or parameters.get("continuation", {}).get("warning_review_confirmed") is not True
+                ):
+                    st.error("Choose an eligible continuation boundary and acknowledge all source QC warnings.")
+                elif descriptor.workflow_id == "cycif-raw-czi" and (
+                    parameters.get("registration", {}).get("enabled") is True
+                    and not parameters.get("registration", {}).get("confirmed_grouping")
+                ):
+                    st.error("Explicitly confirm acquisition grouping before enabling registration.")
+                else:
+                    request, result = _modality_run_request(descriptor, parameters, modality)
+                    signature = confirmation_key(
+                        descriptor.workflow_id, modality, str(st.session_state.get("project_root_path", "")),
+                        str(st.session_state.get("annotation_csv", "")), str(st.session_state.get(path_key, "")),
+                        str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(parameters),
+                    )
+                    st.session_state[f"preflight_{modality}"] = (
+                        request.model_dump(mode="json"), result.model_dump(mode="json"), signature,
+                    )
+            except Exception as exc:
+                st.error(f"Unable to preflight request: {exc}")
+        preflight_state = st.session_state.get(f"preflight_{modality}")
+        parameters = st.session_state.get(f"workflow_parameters_{descriptor.workflow_id}", {})
+        signature = confirmation_key(
+            descriptor.workflow_id, modality, str(st.session_state.get("project_root_path", "")),
+            str(st.session_state.get("annotation_csv", "")), str(st.session_state.get(path_key, "")),
+            str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(parameters),
+        )
+        can_submit = False
+        request_data: dict[str, Any] = {}
+        if preflight_state:
+            receipt_request, receipt_result, stored_signature = preflight_state
+            if stored_signature != signature:
+                st.warning("Inputs or settings changed after checks. Run Check inputs again.")
+            else:
+                original_result = copy.deepcopy(receipt_result)
+                request_data = copy.deepcopy(receipt_request)
+                result_data = copy.deepcopy(receipt_result)
+                result = PreflightResult.model_validate(result_data)
+                mapping_valid, mapping_confirmed = _render_mapping(descriptor, request_data, result_data)
+                mapped_result_data: dict[str, Any] | None = None
+                mapped_request_data: dict[str, Any] | None = None
+                if mapping_valid and mapping_confirmed:
+                    mapping_signature = confirmation_key(
+                        stored_signature,
+                        json.dumps(request_data.get("parameters", {}), sort_keys=True, default=str),
+                    )
+                    mapped_cache = st.session_state.get(f"mapped_preflight_{modality}")
+                    if isinstance(mapped_cache, tuple) and len(mapped_cache) == 3 and mapped_cache[0] == mapping_signature:
+                        _, mapped_request_data, mapped_result_data = mapped_cache
+                    else:
+                        try:
+                            mapped_request, mapped_result = prepare_request(
+                                request_data["workflow_id"], Path(request_data["project_root"]),
+                                Path(request_data["annotation_csv"]), Path(request_data["modality_dir"]),
+                                Path(request_data["output_root"]), request_data["parameters"],
+                            )
+                            mapped_request_data = mapped_request.model_dump(mode="json")
+                            mapped_result_data = mapped_result.model_dump(mode="json")
+                            changed = _reviewed_preflight_changed(original_result, mapped_result_data)
+                            if changed:
+                                st.warning(changed)
+                                mapped_request_data = None
+                                mapped_result_data = None
+                                st.session_state.pop(f"mapped_preflight_{modality}", None)
+                            else:
+                                st.session_state[f"mapped_preflight_{modality}"] = (
+                                    mapping_signature, mapped_request_data, mapped_result_data,
+                                )
+                        except Exception as exc:
+                            st.error(f"Unable to validate the confirmed mapping: {exc}")
+                            mapped_request_data = None
+                            mapped_result_data = None
+                if mapped_result_data is not None and mapped_request_data is not None:
+                    mapped_result = PreflightResult.model_validate(mapped_result_data)
+                    render_preflight(mapped_result)
+                    request_data = mapped_request_data
+                else:
+                    render_preflight(result)
+                parameter_errors = validate_saved_parameters(
+                    descriptor,
+                    st.session_state.get(f"workflow_parameters_{descriptor.workflow_id}", {}),
+                    result.resolved_parameters,
+                )
+                parameter_valid = bool(st.session_state.get(f"workflow_parameters_valid_{descriptor.workflow_id}", False)) and not parameter_errors
+                can_submit = (
+                    mapping_valid and mapping_confirmed and parameter_valid
+                    and mapped_result_data is not None and mapped_request_data is not None
+                    and PreflightResult.model_validate(mapped_result_data).ready
+                )
+        if can_submit and st.button("Start run", type="primary", key=f"submit_{modality}"):
+            try:
+                request, final_result = prepare_request(
+                    request_data["workflow_id"], Path(request_data["project_root"]),
+                    Path(request_data["annotation_csv"]), Path(request_data["modality_dir"]),
+                    Path(request_data["output_root"]), request_data["parameters"],
+                )
+                final_data = final_result.model_dump(mode="json")
+                original_result = preflight_state[1] if preflight_state else {}
+                changed = _reviewed_preflight_changed(original_result, final_data)
+                render_preflight(final_result)
+                if changed:
+                    st.error(changed)
+                elif not final_result.ready:
+                    st.error("Final preflight is blocked; no job was submitted.")
+                else:
+                    job_id = submit_request(request, final_result)
+                    active = dict(st.session_state["active_run_dirs"])
+                    selected = dict(st.session_state["selected_run_dirs"])
+                    active[modality] = str(request.run_dir)
+                    selected[modality] = str(request.run_dir)
+                    st.session_state["active_run_dirs"] = active
+                    st.session_state["selected_run_dirs"] = selected
+                    st.session_state[f"pending_run_selection_{modality}"] = str(request.run_dir)
+                    st.session_state.pop(f"preflight_{modality}", None)
+                    st.session_state.pop(f"mapped_preflight_{modality}", None)
+                    st.success("Your run has started. Follow its progress below; your results will stay in this workspace.")
+            except Exception as exc:
+                st.error(f"Submission failed: {exc}")
+        run_dir = select_run(
+            modality, {item.workflow_id for item in descriptors},
+            Path(str(st.session_state[f"modality_output_{modality}"])).expanduser(),
+        )
+        if run_dir is not None:
+            selected_map = dict(st.session_state["selected_run_dirs"])
+            selected_map[modality] = str(run_dir)
+            st.session_state["selected_run_dirs"] = selected_map
+            render_run(Path(run_dir), "run")
+        return
+
+    history_root_key = f"example_output_{modality}" if mode == "example" else f"modality_output_{modality}"
+    history_workflows = {example.workflow_id} if mode == "example" else {item.workflow_id for item in descriptors}
+    run_dir = select_run(
+        modality, history_workflows,
+        Path(str(st.session_state[history_root_key])).expanduser(),
+        state_scope=mode,
+    )
+    if run_dir is not None:
+        if mode == "own":
+            selected_map = dict(st.session_state["selected_run_dirs"])
+            selected_map[modality] = str(run_dir)
+            st.session_state["selected_run_dirs"] = selected_map
+        if section == "Quality control":
+            st.caption("QC gathers recorded warnings, blocked steps and review decisions. Open an item to understand what needs attention; return to Run only when a workflow requests a confirmed decision.")
+        elif section == "Results":
+            st.caption("Results are generated from the selected run bundle. If the job is still running, check Run for progress; use the figures and tables here only after they appear.")
+        render_run(Path(run_dir), {"Quality control": "qc", "Results": "results", "Files": "files"}[section])
+    else:
+        st.info(
+            "No run is available here yet. Return to Setup to run the file-backed example, or switch to your own data and complete its checks."
+            if mode == "example" else
+            "No own-data run is available yet. Choose your files in Setup, then check inputs and confirm the group mappings."
+        )
+        st.button(
+            "Go to Setup", key=f"setup_from_results_{modality}",
+            on_click=_set_modality_section, args=(modality, "Setup"),
+        )
 
 
 def main() -> None:
-    st.markdown(
-        """
-        <style>
-        :root {
-            --navy: #0f1b2d;
-            --navy2: #1e3a5f;
-            --accent: #1d4ed8;
-            --g50: #f8fafc;
-            --g100: #f1f5f9;
-            --g200: #e2e8f0;
-            --g500: #64748b;
-            --g700: #334155;
-            --white: #ffffff;
-        }
-        html, body, [data-testid="stAppViewContainer"] {
-            background: var(--g50) !important;
-            color: var(--g700) !important;
-            font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
-        }
-        [data-testid="stHeader"] { background: transparent; }
-        .block-container { max-width: 1440px; padding-top: 1.4rem; padding-bottom: 3rem; }
-        h1, h2, h3, h4 { color: var(--navy) !important; letter-spacing: normal !important; }
-        h1 { font-size: 1.72rem !important; font-weight: 800 !important; line-height: 1.25 !important; }
-        h2 { font-size: 1.3rem !important; font-weight: 750 !important; }
-        h3 { font-size: 1.02rem !important; font-weight: 700 !important; }
-        p, label, .stMarkdown, .stCaption { color: var(--g700); line-height: 1.55; }
-        section[data-testid="stSidebar"] {
-            background: var(--white) !important;
-            border-right: 1px solid var(--g200) !important;
-            min-width: 19rem !important;
-        }
-        [data-testid="stSidebarCollapseButton"], [data-testid="collapsedControl"] { display: none !important; }
-        section[data-testid="stSidebar"] {
-            transform: none !important; min-width: 21rem !important; visibility: visible !important;
-        }
-        section[data-testid="stSidebar"] div[role="radio"] {
-            border-radius: 7px; padding: .3rem .45rem; margin: .08rem 0;
-        }
-        section[data-testid="stSidebar"] div[role="radio"][aria-checked="true"] {
-            background: #eff6ff; color: var(--accent); font-weight: 700;
-        }
-        input[type="radio"] { accent-color: var(--accent); }
-        [data-testid="stTextInput"] input, [data-testid="stNumberInput"] input,
-        [data-testid="stTextArea"] textarea {
-            background: var(--white) !important; color: var(--g700) !important;
-            border: 1px solid var(--g200) !important; border-radius: 6px !important;
-        }
-        [data-testid="stSelectbox"] div[data-baseweb="select"] > div {
-            background: var(--white) !important; border-color: var(--g200) !important;
-            border-radius: 6px !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stRadio"] label {
-            border-radius: 7px; padding: .34rem .5rem; font-weight: 550;
-        }
-        section[data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-            background: var(--g100);
-        }
-        .hero {
-            background: linear-gradient(135deg, var(--navy) 0%, #1e3a8a 100%);
-            padding: 1.7rem 2rem; border-radius: 12px; margin: .25rem 0 1.25rem;
-            box-shadow: 0 2px 6px rgba(15,27,45,.08);
-        }
-        .hero-kicker {
-            color: #bfdbfe; font-size: .68rem; font-weight: 750;
-            letter-spacing: .08em; text-transform: uppercase; margin-bottom: .35rem;
-        }
-        .hero h1 { color: var(--white) !important; margin: 0 0 .35rem; }
-        .hero p { color: #dbeafe !important; font-size: .87rem; margin: 0; max-width: 68rem; }
-        .hero-sub { display: flex; gap: .5rem; margin-top: .85rem; flex-wrap: wrap; }
-        .hero-chip {
-            background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.2);
-            border-radius: 20px; padding: .22rem .7rem; color: #eff6ff;
-            font-size: .7rem; font-weight: 600;
-        }
-        .section-card, [data-testid="stVerticalBlockBorderWrapper"] {
-            background: var(--white); border: 1px solid var(--g200);
-            border-radius: 9px; box-shadow: 0 1px 3px rgba(0,0,0,.035);
-        }
-        [data-testid="stMetric"] {
-            background: var(--white); border: 1px solid var(--g200);
-            border-top: 3px solid var(--accent); border-radius: 8px; padding: .75rem 1rem;
-        }
-        [data-testid="stDataFrame"] { border: 1px solid var(--g200); border-radius: 7px; }
-        div[data-testid="stExpander"] { border: 1px solid var(--g200); border-radius: 8px; background: var(--white); }
-        .stButton > button, .stDownloadButton > button {
-            border-radius: 6px; font-weight: 650; border: 1px solid var(--g200);
-        }
-        .stButton > button[kind="primary"] { background: var(--accent); border-color: var(--accent); }
-        div[data-testid="stTabs"] [data-baseweb="tab-list"] {
-            gap: 4px; background: var(--g100); border-radius: 8px; padding: 4px;
-        }
-        div[data-testid="stTabs"] [data-baseweb="tab"] {
-            border-radius: 6px; font-size: .83rem; padding: .42rem .9rem; font-weight: 550;
-        }
-        div[data-testid="stTabs"] [aria-selected="true"] {
-            background: var(--white) !important; color: var(--navy) !important;
-            font-weight: 750 !important; box-shadow: 0 1px 3px rgba(0,0,0,.07);
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
+    from spatial_omics_toolkit.application.ui.presentation import (
+        MODALITY_LABELS, apply_theme, render_home,
     )
-    warnings = registry_warnings()
+
+    apply_theme()
+    _initialize_state()
     workflows = list_workflows()
-    destinations = ["Home", "Project & Data", "CycIF", "HS", "FLIM", "H&E", "Visium", "Review & Submit", "Run & Reports"]
+    modalities = ("CycIF", "HS", "FLIM", "H&E", "Visium", "Integration")
+    by_modality = {name: [workflow for workflow in workflows if workflow.modality == name] for name in modalities}
+    destinations = ["Home", "Project", *modalities]
     with st.sidebar:
         st.markdown("## Spatial Toolkit")
-        st.caption("Reviewed inputs · guarded analysis · traceable outputs")
-        page = st.radio("Workspace", destinations, key="spatial_page")
-        st.caption("Steps: configure project → select assay → review gates → inspect run.")
-        if warnings:
-            with st.expander(f"Adapter notices ({len(warnings)})", expanded=False):
-                for warning in warnings:
-                    st.warning(f"Workflow adapter unavailable: {warning}")
-
-    if not str(st.session_state.get("project_root_path", "")).strip():
-        st.session_state["project_root_path"] = "/home/groups/EmiliLab/pauli/"
-    if not str(st.session_state.get("output_root", "")).strip():
-        st.session_state["output_root"] = "/home/groups/EmiliLab/pauli/02_projects_current/02_spatial_toolkit/runs"
-    if not str(st.session_state.get("annotation_csv", "")).strip():
-        st.session_state["annotation_csv"] = str(Path(st.session_state["project_root_path"]).expanduser() / "project_samples.csv")
-    if "selected_modality_folder" not in st.session_state:
-        st.session_state["selected_modality_folder"] = ""
-    if not workflows:
-        st.error("No implemented modality workflows are currently registered. Workflow adapters are required before submission.")
-        return
-
-    by_modality: dict[str, list[WorkflowDescriptor]] = {
-        modality: [item for item in workflows if item.modality == modality]
-        for modality in ("CycIF", "HS", "FLIM", "H&E", "Visium")
-    }
-    project_root_text = str(st.session_state["project_root_path"])
-    annotation_text = str(st.session_state["annotation_csv"])
-    output_root_text = str(st.session_state["output_root"])
-    modality_text = str(st.session_state.get("selected_modality_folder", ""))
-    selected_descriptors: dict[str, WorkflowDescriptor] = {}
-    for modality, items in by_modality.items():
-        if not items:
-            continue
-        choice_key = f"selected_workflow_{confirmation_key(modality)}"
-        labels = [f"{item.title} ({item.workflow_id})" for item in items]
-        selected = st.session_state.get(choice_key, labels[0])
-        if selected not in labels:
-            selected = labels[0]
-        selected_descriptors[modality] = items[labels.index(selected)]
-    if page in by_modality and by_modality[page]:
-        items = by_modality[page]
-        choice_key = f"selected_workflow_{confirmation_key(page)}"
-        labels = [f"{item.title} ({item.workflow_id})" for item in items]
-        selected_label = st.selectbox("Implemented workflow", labels, key=choice_key)
-        descriptor = items[labels.index(selected_label)]
-        selected_descriptors[page] = descriptor
-        st.session_state["active_workflow_id"] = descriptor.workflow_id
-        st.session_state["active_workflow_modality"] = page
-    active_id = st.session_state.get("active_workflow_id")
-    descriptor = next((item for item in workflows if item.workflow_id == active_id), None)
-    if descriptor is not None:
-        selected_descriptors[descriptor.modality] = descriptor
-
+        st.caption("A clear workspace for each modality.")
+        page = st.radio(
+            "Workspace", destinations, key="spatial_page",
+            format_func=lambda value: MODALITY_LABELS.get(value, value),
+        )
+    if st.session_state.get("_server_picker_open"):
+        server_path_picker_dialog()
     if page == "Home":
-        render_page_hero(
-            "Spatial Toolkit",
-            "A reviewed, modality-specific workspace for spatial imaging and omics analysis.",
-            [f"{len(by_modality)} modalities", f"{len(workflows)} workflows", "Python + SLURM"],
-        )
-        left, right = st.columns([1, 2], gap="large")
-        with left:
-            st.subheader("Workflow")
-            st.write("Choose a project, configure an implemented assay workflow, and complete the review gates before submission.")
-            st.info("Use the persistent sidebar to move between project data, assay settings, review, and run reports.")
-        with right:
-            st.subheader("Available workflows")
-            st.dataframe(
-                [{"Modality": item.modality, "Workflow": item.title, "ID": item.workflow_id} for item in workflows],
-                use_container_width=True, hide_index=True,
-            )
-            st.caption("Only workflows registered by an implemented adapter are selectable.")
-
-    elif page == "Project & Data":
-        render_page_hero(
-            "Project & Data",
-            "Choose the project metadata, modality folder, and output location used by downstream steps.",
-            ["Server-side paths", "Reviewed sample metadata"],
-        )
-        left, right = st.columns([1, 2], gap="large")
-        with left:
-            st.subheader("Project inputs")
-            st.caption("Select server-side project and modality folders. Browser uploads are disabled for large imaging and spatial data.")
-            project_root_text = st.text_input(
-                "Project root",
-                value=str(st.session_state["project_root_path"]),
-                key="project_root_path",
-            )
-            project_root = Path(project_root_text).expanduser()
-            annotation_default = str(project_root / "project_samples.csv")
-            annotation_text = st.text_input(
-                "Project sample metadata (project_samples.csv)",
-                value=st.session_state.get("annotation_csv", annotation_default), key="annotation_csv",
-            )
-            st.download_button(
-                "Download header-only project_samples.csv template", data=project_samples_template(),
-                file_name="project_samples.csv", mime="text/csv",
-                help="Headers only; no example identities or invented sample metadata.",
-            )
-            st.caption(
-                "Use one row per physical specimen/section. `biological_unit_id` may repeat "
-                "for multiple specimens from the same independent unit. Use literal `unknown` "
-                "when a required source value is unavailable; do not guess."
-            )
-        with right:
-            st.subheader("Validated project data")
-            annotation_path = Path(annotation_text).expanduser()
-            if annotation_path.is_file():
-                sample_rows, sample_errors = read_project_samples(annotation_path)
-                for sample_error in sample_errors:
-                    st.error(sample_error)
-                if sample_rows and not sample_errors:
-                    st.success(f"Validated {len(sample_rows)} project sample row(s); each specimen_id is unique.")
-                    st.dataframe(sample_rows[:200], use_container_width=True, hide_index=True)
-                    if len(sample_rows) > 200:
-                        st.caption("Showing the first 200 rows; all validated rows are used in the run contract.")
-            else:
-                st.warning("Select a valid project_samples.csv or download the header-only template and fill it with reviewed metadata.")
-            render_modality_folder_browser(project_root_text)
-            selected_modality = st.session_state.get("selected_modality_folder", "")
-            with st.expander("Advanced: enter a server-side modality path", expanded=False):
-                manual_modality = st.text_input("Manual complete modality folder path", value="", key="modality_manual_path")
-            modality_text = manual_modality.strip() or selected_modality
-            st.session_state["selected_modality_folder"] = modality_text
-            st.info(f"Selected modality folder: {modality_text or '(none selected)'}")
-            output_root_text = st.text_input(
-                "Output root (must be under /home/groups/EmiliLab/pauli)",
-                key="output_root",
-            )
-
-    elif page in by_modality:
-        items = by_modality[page]
-        if not items:
-            render_page_hero(page, f"No implemented {page} workflow is currently registered.")
-            st.info(f"No implemented {page} workflow is currently registered.")
-        else:
-            descriptor = selected_descriptors[page]
-            render_page_hero(
-                descriptor.title,
-                descriptor.description,
-                [page, f"{len(descriptor.stages)} stages", descriptor.workflow_id],
-            )
-            left, right = st.columns([1, 2], gap="large")
-            with left:
-                st.subheader("Workflow settings")
-                st.caption("Fields marked * are required. Advanced settings remain grouped under collapsed sections.")
-                previous_preflight = st.session_state.get("preflight")
-                discovered_parameters: dict[str, Any] = {}
-                if isinstance(previous_preflight, tuple) and len(previous_preflight) == 3:
-                    previous_result = previous_preflight[1]
-                    if isinstance(previous_result, dict):
-                        candidate = previous_result.get("resolved_parameters", {})
-                        if isinstance(candidate, dict):
-                            discovered_parameters = candidate
-                initial = st.session_state.get(f"workflow_parameters_{descriptor.workflow_id}", {})
-                if not isinstance(initial, dict):
-                    initial = {}
-                parameters, parameter_errors = render_parameter_fields(
-                    descriptor, discovered_parameters, initial=initial,
-                    key_prefix=f"{confirmation_key(descriptor.workflow_id)}_",
-                )
-                st.session_state[f"workflow_parameters_{descriptor.workflow_id}"] = parameters
-                st.session_state[f"workflow_parameters_valid_{descriptor.workflow_id}"] = not parameter_errors
-            with right:
-                st.subheader("Workflow overview")
-                overview_tab, tools_tab, limits_tab = st.tabs(["Overview", "Stages & tools", "Limitations"])
-                with overview_tab:
-                    st.caption("Workflow inputs and outputs")
-                    st.markdown(f"**Inputs:** {descriptor.input_description}")
-                    st.markdown(f"**Outputs:** {descriptor.output_description}")
-                with tools_tab:
-                    for index, stage in enumerate(descriptor.stages, start=1):
-                        with st.expander(f"Stage {index}: {stage.title}", expanded=False):
-                            st.write(stage.purpose)
-                            for tool in stage.tools:
-                                st.markdown(f"**{tool.name}** — version: `{tool.version}`; role: {tool.role}" + (f"; [documentation]({tool.documentation_url})" if tool.documentation_url else ""))
-                with limits_tab:
-                    if descriptor.limitations:
-                        for limitation in descriptor.limitations:
-                            st.warning(limitation)
-                    else:
-                        st.info("No additional workflow limitations are registered.")
-                st.caption("Project paths and output location are maintained under Project & Data.")
-
-    elif page == "Review & Submit":
-        render_page_hero(
-            "Review & Submit",
-            "Confirm fresh inputs, explicit identity or technical-QC scope, and final readiness before submission.",
-            ["Preflight", "Identity review", "Final gate"],
-        )
-        left, right = st.columns([1, 2], gap="large")
-        with left:
-            st.subheader("Active workflow")
-            descriptor = next((item for item in workflows if item.workflow_id == st.session_state.get("active_workflow_id")), None)
-            if descriptor is None:
-                st.error("Choose an implemented workflow on an assay page before review or submission.")
-            parameters = st.session_state.get(f"workflow_parameters_{descriptor.workflow_id}", {}) if descriptor else {}
-            params_valid = bool(descriptor) and bool(st.session_state.get(f"workflow_parameters_valid_{descriptor.workflow_id}", False))
-            if descriptor and not params_valid:
-                st.error("Workflow configuration is missing or invalid. Review the assay settings before continuing.")
-            if descriptor:
-                st.write(f"**{descriptor.modality}:** {descriptor.title}")
-                st.caption(f"Workflow ID: `{descriptor.workflow_id}`")
-        with right:
-            if descriptor and params_valid:
-                st.subheader("Preflight and identity review")
-                st.caption("Preflight checks current inputs and parameters. Submission remains blocked until all required review gates are complete.")
-                project_root_text = str(st.session_state.get("project_root_path", ""))
-                annotation_text = str(st.session_state.get("annotation_csv", ""))
-                output_root_text = str(st.session_state.get("output_root", ""))
-                modality_text = str(st.session_state.get("selected_modality_folder", ""))
-                project_root = Path(project_root_text).expanduser()
-                panel_path_text = ""
-                panel_confirmed = False
-                grouping_confirmed = False
-                panel_valid = True
-                tabular_cycif = descriptor.workflow_id == "cycif.tabular_analysis"
-                if descriptor.modality == "CycIF" and "analysis" not in descriptor.workflow_id.lower():
-                    with st.expander("CycIF marker panel and grouping confirmation", expanded=True):
-                        st.caption(
-                            "Optional panel CSV enables export/segmentation only after confirmation. "
-                            "channel_index is zero-based. Without a confirmed panel mapping, "
-                            "registration may run, but export/segmentation remain BLOCKED."
-                        )
-                        panel_path_text = st.text_input("Marker panel CSV path (optional)", key="cycif_panel_csv")
-                        panel_rows, panel_errors = preview_panel_csv(panel_path_text)
-                        for panel_error in panel_errors:
-                            st.error(panel_error)
-                        if panel_rows:
-                            st.dataframe(panel_rows, use_container_width=True, hide_index=True)
-                        panel_key_parts = [panel_path_text]
-                        if panel_path_text:
-                            try:
-                                panel_stat = Path(panel_path_text).expanduser().stat()
-                                panel_key_parts.extend((str(panel_stat.st_size), str(panel_stat.st_mtime_ns)))
-                            except OSError:
-                                pass
-                        panel_confirmed = st.checkbox(
-                            "I reviewed and confirm this panel's zero-based channel-to-marker mapping.",
-                            key=f"cycif_panel_confirmed_{confirmation_key(*panel_key_parts)}",
-                        )
-                        grouping_confirmed = st.checkbox(
-                            "I confirm the selected grouping does not infer biological identity or replicate structure.",
-                            key=f"cycif_grouping_confirmed_{confirmation_key(project_root_text, annotation_text, modality_text)}",
-                        )
-                        panel_valid = not panel_errors and grouping_confirmed
-                        if not grouping_confirmed:
-                            st.warning("Confirm grouping explicitly before CyCIF preflight.")
-                        if panel_path_text and not panel_confirmed:
-                            st.warning("A selected panel without explicit confirmation will not be used for export/segmentation.")
-                        if not panel_path_text:
-                            st.info("No panel selected: registration can proceed; adapter stages requiring marker mapping will report BLOCKED.")
-                    registration = parameters.setdefault("registration", {})
-                    if not isinstance(registration, dict):
-                        st.error("The JSON `registration` parameter must be an object.")
-                        panel_valid = False
-                    else:
-                        registration["confirmed_grouping"] = grouping_confirmed
-                        registration["marker_panel_confirmed"] = panel_confirmed
-                        if panel_path_text:
-                            registration["marker_panel_csv"] = str(Path(panel_path_text).expanduser())
-                        else:
-                            registration.pop("marker_panel_csv", None)
-                form_signature = confirmation_key(
-                    descriptor.workflow_id, project_root_text, annotation_text, modality_text,
-                    output_root_text, json.dumps(parameters, sort_keys=True, default=str),
-                )
-                if st.button("Run preflight", type="secondary", key="run_preflight") and params_valid and panel_valid:
-                    try:
-                        request, result = prepare_request(
-                            descriptor.workflow_id, project_root, Path(annotation_text).expanduser(),
-                            Path(modality_text).expanduser(), Path(output_root_text).expanduser(), parameters,
-                        )
-                        st.session_state["preflight"] = (
-                            request.model_dump(mode="json"), result.model_dump(mode="json"), form_signature
-                        )
-                    except Exception as exc:
-                        st.error(f"Unable to preflight request: {exc}")
-                preflight_state = st.session_state.get("preflight")
-                if preflight_state:
-                    request_data, result_data, stored_signature = preflight_state
-                    if stored_signature != form_signature:
-                        st.warning("Inputs or parameters changed after preflight. Run preflight again before submission.")
-                    else:
-                        preflight = PreflightResult.model_validate(result_data)
-                        render_preflight(preflight)
-                        resolved_parameters = result_data.get("resolved_parameters", {})
-                        group_records = resolved_parameters.get("acquisition_groups", [])
-                        mapping_ui_valid = isinstance(group_records, list)
-                        mapping_confirmed = False
-                        specimen_mapping: dict[str, str] = {}
-                        core_to_specimen: dict[str, str] = {}
-                        use_specimen_id_column = False
-                        if not mapping_ui_valid:
-                            st.error("Adapter acquisition_groups must be a list of structured records; specimen mapping is blocked.")
-                            group_records = []
-                        samples, sample_errors = read_project_samples(Path(request_data["annotation_csv"]))
-                        for sample_error in sample_errors:
-                            st.error(sample_error)
-                            mapping_ui_valid = False
-                        specimen_ids = list(dict.fromkeys(row.get("specimen_id") or "" for row in samples if (row.get("specimen_id") or "").strip()))
-                        manual_mapping = True
-                        if tabular_cycif and bool(resolved_parameters.get("has_specimen_id")):
-                            mapping_choice = st.radio(
-                                "Feature-table mapping source",
-                                ["Use existing specimen_id column", "Map exact core values to project specimen_id"],
-                                key=f"cycif_mapping_source_{confirmation_key(request_data['workflow_id'], request_data['modality_dir'])}",
-                            )
-                            manual_mapping = mapping_choice == "Map exact core values to project specimen_id"
-                        if tabular_cycif and not manual_mapping and bool(resolved_parameters.get("has_specimen_id")):
-                            st.info("The adapter found a specimen_id column. It will be used only after explicit confirmation and validation against project_samples.csv; no names are inferred.")
-                            mapping_confirmed = st.checkbox(
-                                "I confirm the existing specimen_id column is the authoritative mapping to project_samples.csv.",
-                                key=f"cycif_existing_specimen_confirmed_{confirmation_key(request_data['annotation_csv'], *specimen_ids)}",
-                            )
-                            use_specimen_id_column = mapping_confirmed
-                            if not mapping_confirmed:
-                                st.warning("Confirm the specimen_id column before submitting tabular analysis.")
-                        elif group_records:
-                            st.markdown("#### Confirm group-to-specimen mapping")
-                            st.caption("Each group must map explicitly. Exact source paths are available on demand.")
-                            seen_group_keys: set[str] = set()
-                            for group in group_records:
-                                if not isinstance(group, dict) or not isinstance(group.get("group_key"), str) or not group["group_key"].strip():
-                                    st.error("Adapter returned an acquisition group without a nonempty group_key; mapping is blocked.")
-                                    mapping_ui_valid = False
-                                    continue
-                                group_key = group["group_key"]
-                                if group_key in seen_group_keys:
-                                    st.error(f"Adapter returned duplicate acquisition group key: {group_key}")
-                                    mapping_ui_valid = False
-                                    continue
-                                seen_group_keys.add(group_key)
-                                input_paths = group.get("input_paths")
-                                if not isinstance(input_paths, list) or any(not isinstance(item, str) for item in input_paths):
-                                    st.error(f"Adapter group {group_key} must include input_paths as a list of exact paths.")
-                                    mapping_ui_valid = False
-                                    input_paths = []
-                                with st.container(border=True):
-                                    title_col, mapping_col = st.columns([2, 1])
-                                    with title_col:
-                                        st.markdown(f"**{group.get('label', group_key)}**")
-                                        st.caption(f"Exact group key: `{group_key}`")
-                                    with mapping_col:
-                                        choice = st.selectbox(
-                                            "Project specimen_id", ["UNMAPPED", *specimen_ids],
-                                            key=f"specimen_mapping_{confirmation_key(group_key)}",
-                                        )
-                                with st.expander(f"Exact input paths · {group.get('label', group_key)}", expanded=False):
-                                    for input_path in input_paths:
-                                        st.code(input_path, language=None)
-                                if tabular_cycif:
-                                    core_to_specimen[group_key] = choice
-                                else:
-                                    specimen_mapping[group_key] = choice
-                            selected_mapping = core_to_specimen if tabular_cycif else specimen_mapping
-                            unmapped = [key for key, specimen_id in selected_mapping.items() if specimen_id == "UNMAPPED"]
-                            if unmapped:
-                                st.warning(f"{len(unmapped)} group(s) remain UNMAPPED. They are eligible only for technical QC; specimen aggregation/comparison/integration must remain BLOCKED.")
-                            confirmation_parts = [request_data["annotation_csv"], *[f"{key}={value}" for key, value in sorted(selected_mapping.items())]]
-                            mapping_confirmed = st.checkbox(
-                                "I confirm these explicit group-to-specimen mappings, including any UNMAPPED technical-QC groups.",
-                                key=f"specimen_mapping_confirmed_{confirmation_key(*confirmation_parts)}",
-                            )
-                            if not mapping_confirmed:
-                                st.warning("Explicitly confirm the full mapping table before submission.")
-                        elif descriptor.workflow_id in {"he-image-intake", "cycif-raw-czi"}:
-                            st.info("This adapter reports no acquisition groups. This run can only perform source-bound technical QC and bounded image intake; it cannot attach specimen identity, pair images, or produce specimen-level analysis.")
-                            mapping_confirmed = st.checkbox(
-                                "I confirm this no-group run is technical QC only; no sample identity or biological comparison will be inferred.",
-                                key=f"qc_only_confirmed_{confirmation_key(request_data['workflow_id'], request_data['modality_dir'])}",
-                            )
-                            if not mapping_confirmed:
-                                st.warning("Explicitly confirm technical-QC-only scope before submission.")
-                        else:
-                            st.error("This workflow returned no acquisition groups for explicit identity mapping. Submission is blocked; check the modality inputs or adapter preflight.")
-                            mapping_ui_valid = False
-                        request_data["parameters"]["specimen_mapping"] = specimen_mapping
-                        request_data["parameters"]["core_to_specimen"] = core_to_specimen
-                        request_data["parameters"]["use_specimen_id_column"] = use_specimen_id_column
-                        request_data["parameters"]["specimen_mapping_confirmed"] = mapping_confirmed
-                        result_data["resolved_parameters"]["specimen_mapping"] = specimen_mapping
-                        result_data["resolved_parameters"]["core_to_specimen"] = core_to_specimen
-                        result_data["resolved_parameters"]["use_specimen_id_column"] = use_specimen_id_column
-                        result_data["resolved_parameters"]["specimen_mapping_confirmed"] = mapping_confirmed
-                        st.session_state["preflight"] = (request_data, result_data, stored_signature)
-                        if mapping_ui_valid and mapping_confirmed and st.button("Submit guarded run to SLURM", type="primary", key="submit_run"):
-                            try:
-                                request, final_preflight = prepare_request(
-                                    request_data["workflow_id"], Path(request_data["project_root"]),
-                                    Path(request_data["annotation_csv"]), Path(request_data["modality_dir"]),
-                                    Path(request_data["output_root"]), request_data["parameters"],
-                                )
-                                render_preflight(final_preflight)
-                                if not final_preflight.ready:
-                                    st.error("Final preflight is blocked with the confirmed specimen mapping; no SLURM job was submitted.")
-                                else:
-                                    job_id = submit_request(request, final_preflight)
-                                    st.session_state["active_run_dir"] = str(request.run_dir)
-                                    st.session_state["view_run_directory"] = str(request.run_dir)
-                                    st.session_state.pop("preflight", None)
-                                    st.success(f"Submitted SLURM Python worker job {job_id}; run ID {request.run_id}")
-                            except Exception as exc:
-                                st.error(f"Submission failed: {exc}")
-
-    elif page == "Run & Reports":
-        render_page_hero(
-            "Run & Reports",
-            "Inspect run status, stage tables, provenance, bounded previews, and saved artifacts.",
-            ["Stage status", "Provenance", "Bounded previews"],
-        )
-        left, right = st.columns([1, 2], gap="large")
-        with left:
-            st.subheader("Run status")
-            run_dir_text = st.text_input(
-                "Run directory", value=st.session_state.get("active_run_dir", ""),
-                key="view_run_directory",
-            )
-            st.caption("The active run location is retained across workspace navigation.")
-        with right:
-            if run_dir_text:
-                run_dir = Path(run_dir_text).expanduser()
-                if run_dir.is_dir():
-                    display_run(run_dir)
-                else:
-                    st.caption("Run directory not found yet")
-            else:
-                st.info("Submit a guarded run or enter an existing run directory to view status and provenance.")
+        render_home(lambda destination: st.session_state.__setitem__("spatial_page", destination))
+    elif page == "Project":
+        _render_project()
+    else:
+        _render_modality(page, by_modality[page])
 
 
 main()

@@ -64,16 +64,3 @@ def test_spatial_proteomics_execution_plan():
     assert plan["plugin"] == "spatial_proteomics"
     assert "cell_segmentation_cellpose_stardist" in plan["stages"]
     assert "pseudobulk_sample_aggregation" in plan["stages"]
-
-
-def test_prevail_barretts_cycif_manifest_fixture():
-    """Test loading and validating the real-world PREVAIL Barretts CyCIF manifest fixture."""
-    from pathlib import Path
-    from spatial_omics_toolkit.io.manifest import load_and_validate_manifest
-
-    fixture_path = Path(__file__).resolve().parents[2] / "fixtures" / "prevail_barretts_cycif_manifest.json"
-    manifest, errors = load_and_validate_manifest(fixture_path)
-    assert manifest is not None
-    assert manifest.study_id == "PREVAIL_BARRETTS_ESOPHAGUS"
-    assert manifest.modality == Modality.SPATIAL_PROTEOMICS
-    assert len(errors) == 0

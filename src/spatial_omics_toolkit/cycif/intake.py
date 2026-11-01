@@ -483,8 +483,16 @@ def build_intake_report(
         DataFrame with columns ``Check``, ``Status`` (``✓``/``⚠``/``—``), ``Detail``.
     """
     checks = []
-    actual_counts = df_files["slide"].value_counts().to_dict() if len(df_files) else {}
-    slides = sorted(df_files["slide"].unique()) if len(df_files) else []
+    raw_file_count = len(df_files)
+    checks.append(
+        {
+            "Check": "Raw image files found",
+            "Status": "✓" if raw_file_count else "⚠",
+            "Detail": f"{raw_file_count} raw image file(s) found" if raw_file_count else "No raw image files found.",
+        }
+    )
+    actual_counts = df_files["slide"].value_counts().to_dict() if raw_file_count else {}
+    slides = sorted(df_files["slide"].unique()) if raw_file_count else []
 
     if config.expected_files_per_slide is None:
         checks.append(
@@ -506,35 +514,48 @@ def build_intake_report(
                 }
             )
 
-    status = "✓" if len(unparsed) == 0 else "⚠"
+    if not raw_file_count:
+        status = "⚠"
+        detail = "No raw image files to parse."
+    else:
+        status = "✓" if len(unparsed) == 0 else "⚠"
+        detail = f"{len(df_parsed)}/{raw_file_count} OK"
     checks.append(
         {
             "Check": "Filename parsing",
             "Status": status,
-            "Detail": f"{len(df_parsed)}/{len(df_files)} OK",
+            "Detail": detail,
         }
     )
 
-    bad_ch = sum(1 for r in xml_records if r["n_channels"] != config.expected_channels)
-    status = "✓" if bad_ch == 0 else "⚠"
+    if not xml_records:
+        status = "—"
+        detail = "No OME XML metadata available — channel count check skipped."
+    else:
+        bad_ch = sum(1 for r in xml_records if r["n_channels"] != config.expected_channels)
+        status = "✓" if bad_ch == 0 else "⚠"
+        detail = f"{bad_ch} mismatch(es)"
     checks.append(
         {
             "Check": f"Channel count ({config.expected_channels}/{config.expected_channels})",
             "Status": status,
-            "Detail": f"{bad_ch} mismatch(es)",
+            "Detail": detail,
         }
     )
 
-    bad_px = 0
-    if len(px_df) > 0:
+    if px_df.empty:
+        status = "—"
+        detail = "No pixel-size metadata available — consistency check skipped."
+    else:
         unique_px = px_df.groupby("slide")["pixel_size_um"].apply(lambda x: x.unique())
-        bad_px = sum(1 for v in unique_px if len(v) > 1)
-    status = "✓" if bad_px == 0 else "⚠"
+        bad_px = sum(1 for values in unique_px if len(values) > 1)
+        status = "✓" if bad_px == 0 else "⚠"
+        detail = f"{bad_px} slide(s) with multiple values"
     checks.append(
         {
             "Check": "Pixel size consistent per slide",
             "Status": status,
-            "Detail": f"{bad_px} slide(s) with multiple values",
+            "Detail": detail,
         }
     )
 
@@ -549,12 +570,17 @@ def build_intake_report(
             }
         )
 
-    status = "✓" if len(missing) == 0 else "⚠"
+    if df_parsed.empty:
+        status = "—"
+        detail = "No parsed filenames — round-coverage check skipped."
+    else:
+        status = "✓" if len(missing) == 0 else "⚠"
+        detail = f"{len(missing)} missing"
     checks.append(
         {
             "Check": f"All {len(config.expected_rounds)} expected rounds present",
             "Status": status,
-            "Detail": f"{len(missing)} missing",
+            "Detail": detail,
         }
     )
 
@@ -1099,15 +1125,19 @@ def build_html_report(
     slide_list = sorted(df_files["slide"].unique()) if total_files else []
     n_pass = int((report["Status"] == "✓").sum()) if len(report) else 0
     n_checked = int((report["Status"] != "—").sum()) if len(report) else 0
+    n_skipped = int((report["Status"] == "—").sum()) if len(report) else 0
     n_scenes = (
         len(df_parsed[["slide", "scene"]].drop_duplicates()) if len(df_parsed) else 0
     )
-    overall = (
-        "PASS"
-        if n_checked and n_pass == n_checked
-        else "ISSUES DETECTED" if n_checked else "NO CHECKS RUN"
-    )
-    overall_color = "#16a34a" if overall == "PASS" else "#dc2626"
+    if not total_files or (n_checked and n_pass < n_checked):
+        overall = "ISSUES DETECTED"
+    elif n_skipped:
+        overall = "PARTIAL"
+    elif n_checked:
+        overall = "PASS"
+    else:
+        overall = "NO CHECKS RUN"
+    overall_color = "#16a34a" if overall == "PASS" else "#f59e0b" if overall == "PARTIAL" else "#dc2626"
 
     parts.append(
         f"""<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
@@ -1127,6 +1157,7 @@ def build_html_report(
     parts.append(
         f"""<div class="ribbon">
 <div class="ribbon-card pass"><div class="num">{n_pass}/{n_checked}</div><div class="lbl">Checks Passed</div></div>
+<div class="ribbon-card info"><div class="num">{n_skipped}</div><div class="lbl">Checks Skipped</div></div>
 <div class="ribbon-card info"><div class="num">{total_files}</div><div class="lbl">Files Scanned</div></div>
 <div class="ribbon-card info"><div class="num">{total_gb} GB</div><div class="lbl">Total Data</div></div>
 <div class="ribbon-card info"><div class="num">{len(slide_list)}</div><div class="lbl">Slides</div></div>
