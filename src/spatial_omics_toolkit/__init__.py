@@ -1,16 +1,8 @@
-"""SpatialOmics Toolkit: Institute-grade spatial and single-cell multiomics analytics platform.
+"""Spatial Omics Toolkit library and Streamlit spatial-analysis application.
 
-Notebook analysts drive the CyCIF / spatial-proteomics pipeline one numbered
-step at a time from this top-level namespace::
-
-    import spatial_omics_toolkit as sot
-    cells = sot.step07_classify_cells(cells, sot.PREVAIL_BARRETTS_MARKER_CONFIG)
-    cells = sot.step08_score_programs(cells, sot.PREVAIL_BARRETTS_EMT_PROGRAMS)
-    cores = sot.step09_aggregate_per_core(cells)
-
-Tab-complete ``sot.step<TAB>`` in Jupyter to see every step in pipeline
-order. See ``spatial_omics_toolkit.cycif`` for the full step table and
-``README.md`` for a worked quickstart.
+The package provides reusable spatial-analysis APIs and the contracts behind
+the modality-specific app workflows. See ``apps/streamlit/app.py`` for the
+application and ``spatial_omics_toolkit.cycif`` for the step-based CyCIF API.
 """
 
 __version__ = "0.1.0"
