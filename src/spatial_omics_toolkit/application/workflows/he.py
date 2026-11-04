@@ -43,10 +43,10 @@ def describe() -> WorkflowDescriptor:
     return WorkflowDescriptor(
         workflow_id="he-image-intake",
         modality="H&E",
-        title="H&E source-preserving image intake and QC",
+        title="H&E image inventory and quality checks",
         description=(
             "Inventory supported H&E image files, record readable image metadata, "
-            "and create bounded previews where a qualified reader is available. "
+            "and create size-limited previews where a suitable reader is available. "
             "No biological pairing or image registration is inferred."
         ),
         stages=[
@@ -61,7 +61,7 @@ def describe() -> WorkflowDescriptor:
                     ToolReference(
                         name="OpenSlide",
                         version=_version("openslide-python"),
-                        role="Pyramidal SVS metadata and thumbnail reader",
+                        role="Read metadata and thumbnails from pyramidal SVS images",
                         documentation_url="https://openslide.org/api/python/",
                     ),
                     ToolReference(
@@ -81,18 +81,29 @@ def describe() -> WorkflowDescriptor:
                     FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_image_files", role="Discover supported source files"),
                     FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_inspect_image", role="Read image metadata and create per-image preview"),
                     FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_render_czi_preview", role="Dispatch CZI preview rendering"),
-                    FunctionReference(source_file="external:image_previews.py", function_name="czi_rgb_preview", role="Canonical CZI RGB preview rendering"),
+                    FunctionReference(source_file="external:image_previews.py", function_name="czi_rgb_preview", role="Create CZI RGB previews"),
                 ],
                 event_stage_ids=["workflow_output"],
             )
         ],
         input_description=(
-            "User-selected H&E folder containing supported .svs, .czi, TIFF, "
-            "or OME-TIFF images."
+            "- An existing H&E folder with at least one recursively discovered .svs, .czi, "
+            ".tif, .tiff, .ome.tif, or .ome.tiff image; image discovery is checked during execution.\n"
+            "- At least one of OpenSlide, aicspylibczi, or tifffile must be installed; "
+            "each image needs its format-specific reader for metadata.\n"
+            "- A project_samples.csv is required for submission; no image-to-specimen mapping "
+            "is requested by this workflow.\n"
+            "- Optional display settings: maximum preview dimension 64–8192 pixels "
+            "(default 2048) and CZI mosaic scale 0.001–0.12 (default 0.12)."
         ),
         output_description=(
-            "Per-run JSON and CSV inventories, reader metadata and optional "
-            "reduced preview images under run_dir."
+            "- After images are found and inspected, `he_image_intake/image_inventory.json` "
+            "and `image_inventory.csv` record paths, sizes, metadata, warnings, and preview references. "
+            "Missing metadata for any image fails the workflow even though inventories were written.\n"
+            "- JPEG previews are optional: SVS requires a successful OpenSlide thumbnail; CZI "
+            "requires a mosaic and successful preview helper and Pillow. TIFF has metadata only. "
+            "A CZI preview can fail while its metadata is retained.\n"
+            "- Source images remain unchanged; no pairing or registration is performed."
         ),
         parameter_fields=[
             ParameterField(
@@ -106,7 +117,7 @@ def describe() -> WorkflowDescriptor:
                 unit="pixels",
                 section="Display",
                 stage_id="image-intake",
-                help_text="Upper bound for bounded SVS/CZI previews. This does not change source pixels; the canonical CZI JPEG helper may apply a smaller output cap.",
+                help_text="Maximum dimension for SVS/CZI previews. This does not change source pixels; the CZI JPEG helper may use a smaller output limit.",
             ),
             ParameterField(
                 name="czi_preview_scale_factor",
@@ -119,7 +130,7 @@ def describe() -> WorkflowDescriptor:
                 unit="fraction of source dimensions",
                 section="Display",
                 stage_id="image-intake",
-                help_text="Display-only downsampling scale for the canonical CZI RGB mosaic preview; raw source data remain unchanged.",
+                help_text="Downsampling scale for the CZI RGB mosaic preview, for display only; source data remain unchanged.",
             ),
         ],
         limitations=[

@@ -52,39 +52,60 @@ def describe() -> WorkflowDescriptor:
         modality="Integration",
         title="Exploratory serial-section H&E–fluorescence alignment",
         description=(
-            "Estimate and visualize a translation-only exploratory alignment between an explicit H&E CZI and "
-            "a selected fluorescence/HS CZI channel. This technical-QC demonstration does not establish pairing, "
-            "same-cell registration, or biological identity."
+            "Estimate and visualize an exploratory translation-only alignment between a selected H&E CZI and "
+            "a selected fluorescence or hyperspectral CZI channel. This technical quality check does not establish "
+            "biological pairing, same-cell registration, or biological identity."
         ),
         stages=[
             StageDefinition(
                 stage_id="serial-section-alignment",
-                title="Source-bound previews and translation QC",
+                title="Image previews and alignment quality checks",
                 purpose=(
-                    "Read native image geometry and physical scale, bound the source arrays to 512 pixels per "
-                    "dimension, run the canonical translation-only registration, and save inspectable overlays and metrics."
+                    "Read the original image geometry and physical scale, reduce the images to at most 512 pixels per "
+                    "dimension, run translation-only registration, and save overlays and metrics for review."
                 ),
                 tools=[
                     ToolReference(name="aicspylibczi", version=_version("aicspylibczi"), role="CZI image and metadata reader"),
-                    ToolReference(name="scikit-image", version=_version("scikit-image"), role="Bounded image rescaling and registration support"),
-                    ToolReference(name="Matplotlib", version=_version("matplotlib"), role="QC figures (PDF and bounded PNG preview)"),
+                    ToolReference(name="scikit-image", version=_version("scikit-image"), role="Rescale and register images"),
+                    ToolReference(name="Matplotlib", version=_version("matplotlib"), role="Create quality-check figures (PDF and size-limited PNG preview)"),
                 ],
                 implementations=[
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_native_metadata", role="Read selected CZI geometry and scale"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_read_bounded", role="Read bounded source arrays"),
-                    FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="register_he_to_fluorescence", role="Translation-only registration"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="execute", role="Render previews, overlays, and QC metrics"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_native_metadata", role="Read the selected CZI geometry and scale"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_read_bounded", role="Read source images within the size limit"),
+                    FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="register_he_to_fluorescence", role="Register images using translation only"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="execute", role="Create previews, overlays, and quality metrics"),
                 ],
                 event_stage_ids=["workflow_output"],
             )
         ],
         input_description=(
-            "Two explicitly selected CZI sources are required. Confirm these are the two candidate images to compare "
-            "and choose the reference channel; this authorizes exploratory technical QC, not biological pairing."
+            "- Select existing moving H&E and reference fluorescence or hyperspectral `.czi` "
+            "files under the approved workspace; relative paths resolve against the project root.\n"
+            "- Explicitly choose `serial_section_candidate` and confirm the candidate sources. "
+            "This authorizes exploratory technical QC, not biological pairing.\n"
+            "- Supply a nonnegative reference channel index and its exact CZI metadata name. "
+            "The reference must resolve to one grayscale plane; H&E must be native BGR24 at C=0. "
+            "The first recorded Z and T indices are used.\n"
+            "- Each source needs positive physical X and Y pixel sizes isotropic within 1%, "
+            "one dimension block, at most one scene and valid mosaic bounds. Non-mosaic planes "
+            "must use a supported pixel type and fit the 128 MiB per-source native read limit. "
+            "These source details are checked during execution.\n"
+            "- The translation search radius is 1–64 reference preview pixels (default 16). "
+            "Runtime requires aicspylibczi, NumPy, SciPy, scikit-image, Matplotlib and Pillow.\n"
+            "- Confirm a mapping entry for both `integration:moving_he` and "
+            "`integration:reference` to a project_samples.csv specimen_id or explicitly "
+            "`UNMAPPED` if unknown. The worker requires this even though the workflow reports "
+            "the comparison as unmapped and does not infer pairing."
         ),
         output_description=(
-            "Source inventory and native metadata JSON, bounded source previews, before/after overlay PDF and PNG, "
-            "and a metrics/QC JSON report under the run directory."
+            "- If execution completes, `integration_serial_section_alignment/` contains "
+            "`source_inventory_and_native_metadata.json`, `moving_he_source_preview.png`, "
+            "`reference_channel_source_preview.png`, `before_after_alignment_overlay.pdf`, "
+            "`before_after_alignment_overlay.png`, and `alignment_qc_report.json`. "
+            "A failure can leave a partial output set.\n"
+            "- The result is a WARNING and requires visual review: translation and correlation "
+            "are descriptive, with no acceptance threshold. The alignment is not accepted and "
+            "does not establish same-cell registration or biological identity."
         ),
         parameter_fields=[
             ParameterField(name="moving_he_path", label="Moving H&E CZI", kind="path", required=True, section="Sources", stage_id="serial-section-alignment", help_text="Exact H&E CZI path; must be explicitly supplied."),
@@ -93,13 +114,13 @@ def describe() -> WorkflowDescriptor:
             ParameterField(name="candidate_sources_confirmed", label="I confirm these are the two candidate source images to compare", kind="bool", required=True, default=False, section="Review", stage_id="serial-section-alignment", review_required=True, help_text="Explicitly authorizes these selected sources for exploratory technical QC as a serial-section candidate; it does not confirm biological pairing or accepted alignment."),
             ParameterField(name="reference_channel_index", label="Reference channel index (C)", kind="int", required=True, section="Reference image", stage_id="serial-section-alignment", help_text="Choose the fluorescence/HS channel from the source metadata. Channel identity is never inferred."),
             ParameterField(name="reference_channel_name", label="Reference channel name confirmation", kind="text", required=True, section="Reference image", stage_id="serial-section-alignment", help_text="Enter the metadata channel name corresponding to the chosen index; it must match source metadata exactly."),
-            ParameterField(name="search_radius", label="Translation search radius", kind="int", default=16, min_value=1, max_value=64, unit="reference preview pixels", section="Registration", stage_id="serial-section-alignment", help_text="Search extent passed to the canonical translation-only method; reported pixels are in bounded reference-image coordinates."),
+            ParameterField(name="search_radius", label="Translation search radius", kind="int", default=16, min_value=1, max_value=64, unit="reference preview pixels", section="Registration", stage_id="serial-section-alignment", help_text="Search extent for translation-only alignment, measured in pixels of the reduced reference image."),
         ],
         limitations=[
-            "Translation-only exploratory serial-section alignment; no deformation model, same-cell registration, or biological identity claim.",
-            "Candidate-source confirmation authorizes only exploratory comparison; it does not establish biological pairing or accepted alignment. Visual review of outputs remains required.",
-            "Scale requires physical X/Y pixel-size metadata in both CZI files; missing or anisotropic scale metadata blocks registration rather than assuming a scale.",
-            "Correlation is descriptive only and has no calibrated acceptance threshold; inspect every output visually. An executed transform is not an accepted alignment.",
+            "This exploratory serial-section alignment uses translation only; it does not model deformation or establish same-cell registration or biological identity.",
+            "Confirming the candidate sources authorizes only exploratory comparison; it does not establish biological pairing or accepted alignment. Visual review remains required.",
+            "Both CZI files need physical X/Y pixel-size metadata; missing or anisotropic scale metadata blocks registration rather than assuming a scale.",
+            "Correlation is descriptive and has no calibrated acceptance threshold; inspect every output visually. Computing a transform does not mean the alignment is accepted.",
         ],
     )
 
@@ -157,7 +178,7 @@ def preflight(request: RunRequest) -> PreflightResult:
     return PreflightResult(
         ready=not blockers,
         blockers=blockers,
-        warnings=["All acquisition groups remain UNMAPPED; this run is restricted to explicit source-bound technical QC."],
+        warnings=["All acquisition groups remain UNMAPPED; this run is restricted to technical quality checks of the explicitly selected images."],
         resolved_parameters={
             "moving_he_path": str(he_path) if he_path is not None else "",
             "reference_fluorescence_path": str(fluor_path) if fluor_path is not None else "",

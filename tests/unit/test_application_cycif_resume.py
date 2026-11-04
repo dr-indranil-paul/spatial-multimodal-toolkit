@@ -640,6 +640,7 @@ def test_streamlit_boundary_selector_rejects_non_raw_parent_without_exception(tm
     raw_workflow = next(item for item in list_workflows() if item.workflow_id == "cycif-raw-czi")
     app = AppTest.from_file(str(Path(__file__).parents[2] / "apps" / "streamlit" / "app.py"))
     app.session_state["spatial_page"] = "CycIF"
+    app.session_state["workspace_section_CycIF"] = "Setup"
     app.session_state["data_mode_CycIF"] = "own"
     app.session_state[f"selected_workflow_{key('CycIF')}"] = raw_workflow.title
     app.session_state["output_root"] = str(output_root)
@@ -668,6 +669,7 @@ def test_streamlit_offers_conversion_and_registration_from_intake_checkpoint(tmp
     raw_workflow = next(item for item in list_workflows() if item.workflow_id == "cycif-raw-czi")
     app = AppTest.from_file(str(Path(__file__).parents[2] / "apps" / "streamlit" / "app.py"))
     app.session_state["spatial_page"] = "CycIF"
+    app.session_state["workspace_section_CycIF"] = "Setup"
     app.session_state["data_mode_CycIF"] = "own"
     app.session_state[f"selected_workflow_{key('CycIF')}"] = raw_workflow.title
     app.session_state["output_root"] = str(tmp_path)

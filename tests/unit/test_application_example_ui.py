@@ -47,6 +47,7 @@ def test_examples_default_without_overwriting_own_project_or_configuration(
     app.session_state[f"modality_output_{modality}"] = str(own_project / "results")
     app.session_state[f"workflow_parameters_{workflow_id}"] = {"user_setting_to_preserve": "unchanged"}
     app.session_state["active_run_dirs"] = {modality: str(own_project / "prior-run")}
+    app.session_state[f"workspace_section_{modality}"] = "Setup"
     app.session_state["selected_run_dirs"] = {modality: str(own_project / "prior-run")}
     app.run()
     assert not app.exception, [item.message for item in app.exception]

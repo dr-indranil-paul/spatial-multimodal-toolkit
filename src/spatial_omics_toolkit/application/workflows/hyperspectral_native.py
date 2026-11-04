@@ -88,34 +88,43 @@ def describe() -> WorkflowDescriptor:
     reader = ToolReference(
         name="clinical_roi_hs_flim.py",
         version="SHA-256 recorded in each run receipt",
-        role="Canonical native CZI layout/band audit and two-harmonic spectral-moment reader",
+        role="Check CZI layout and spectral bands, and read two-harmonic spectral moments",
     )
     metadata = ToolReference(
         name="clinical_roi_hyperspectral.py",
         version="SHA-256 recorded in each run receipt",
-        role="Canonical native HS metadata and band validators",
+        role="Validate raw hyperspectral metadata and spectral bands",
     )
     return WorkflowDescriptor(
         workflow_id=WORKFLOW_ID,
         modality="HS",
-        title="Native hyperspectral technical QC",
-        description="Reads one explicitly selected raw spectral CZI through the canonical native reader and creates source-bound intensity and spectral-phasor diagnostics. Technical QC only; no biological inference, unmixing, or group comparisons.",
+        title="Hyperspectral technical QC",
+        description="Read one selected raw spectral CZI and produce intensity and spectral-phasor diagnostics. These outputs are for technical quality control only, not biological inference, unmixing, or group comparisons.",
         stages=[
-            StageDefinition(stage_id="hs_native_inventory", title="Native spectral source audit", purpose="Record exact source identity, native grid, band audit, and bounded working-memory declaration.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Audit native CZI and compute source-bound moments"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate native channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect exact raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate spectral channel grid")]),
-            StageDefinition(stage_id="hs_native_moments", title="Native spectral moments", purpose="Use the canonical equal-width contiguous-band reader to save five native intensity/phasor moment maps.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Read five native intensity/phasor moments"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate native channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect exact raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate spectral channel grid")]),
-            StageDefinition(stage_id="hs_native_qc_plots", title="Technical QC figures", purpose="Render native intensity and H1/H2 spectral phasor-density diagnostics without biological interpretation.", tools=[reader], implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/hyperspectral_native.py", function_name="execute", role="Render QC figures inline from saved native moments")]),
+            StageDefinition(stage_id="hs_native_inventory", title="Check spectral input", purpose="Record the source file identity, original image grid, spectral-band checks, and working-memory limit.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Check the CZI and compute spectral moments"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate the original channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate the spectral channel grid")]),
+            StageDefinition(stage_id="hs_native_moments", title="Create spectral moment maps", purpose="Read contiguous, equal-width spectral bands and save five intensity and phasor moment maps on the original image grid.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Read five intensity and phasor moments on the original grid"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate the original channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate the spectral channel grid")]),
+            StageDefinition(stage_id="hs_native_qc_plots", title="Plot technical quality checks", purpose="Plot intensity and first- and second-harmonic spectral phasor densities without biological interpretation.", tools=[reader], implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/hyperspectral_native.py", function_name="execute", role="Create quality-control figures from saved spectral moments")]),
         ],
-        input_description="A modality folder containing one raw native spectral .czi, or multiple .czi files with the exact source_czi selector supplied. No clinical specimen manifest or biological identity is required.",
-        output_description="Run-local source-bound native moment NPZ, metadata JSON, audited-band CSV, and intensity/H1/H2 diagnostic PDFs with an adapter provenance receipt.",
+        input_description=(
+            "- A modality folder searched recursively for native spectral `.czi` files. One file is processed per run: a sole CZI is selected automatically; with multiple files, supply the exact `source_czi` path. Other files are reported, not decoded.\n"
+            "- The canonical `clinical_roi_hs_flim.py` and `clinical_roi_hyperspectral.py` scripts, and a positive working-memory limit (default 4 GiB).\n"
+            "- The selected CZI must satisfy the native reader's image-layout, uint16 channel-plane, memory, and spectral-band checks, including at least five uniformly spaced, contiguous, equal-width bands.\n"
+            "- The shared sample CSV and confirmed acquisition mapping are still required; the mapping may be `UNMAPPED`. No clinical selection ledger is required."
+        ),
+        output_description=(
+            "- On successful native spectral QC: source metadata JSON, spectral-band audit CSV, and a compressed file containing intensity and first- and second-harmonic spectral moment maps.\n"
+            "- Intensity and spectral-phasor density QC PDFs, plus processing and provenance JSON.\n"
+            "- These describe recorded spectral patterns for technical QC, not molecular identity, unmixing, calibrated lifetime, or biological comparisons. Unsupported data, changed inputs, memory limits, or processing errors can stop the run and leave partial outputs."
+        ),
         parameter_fields=[
             ParameterField(name="source_czi", label="Exact source CZI (when multiple)", kind="path", section="Input", help_text="Optional when the folder contains exactly one .czi; otherwise select one exact .czi in the modality folder."),
             ParameterField(name="max_working_bytes", label="Maximum native working memory", kind="int", default=4 * 1024**3, min_value=1, unit="bytes", section="Resources", help_text="Hard bound passed to the canonical native reader; jobs exceeding this memory estimate fail rather than silently expanding the limit."),
         ],
         limitations=[
-            "One native CZI is processed per run; multiple sources require separate explicitly selected runs.",
-            "Spectral phasors summarize the recorded contiguous equal-width band order; they are not calibrated lifetimes, unmixing results, or molecular identities.",
-            "All plots and outputs are technical-QC/exploratory artifacts and make no biological or cohort-level claim.",
-            "The canonical native reader enforces its band/layout constraints and memory bound; this workflow does not resample or mutate raw input.",
+            "One raw CZI is processed per run; multiple sources require separate runs with an explicit selection for each.",
+            "Spectral phasors summarize the recorded order of contiguous, equal-width bands; they are not calibrated lifetimes, unmixing results, or molecular identities.",
+            "Plots and outputs are for technical quality control and exploration; they do not support biological or cohort-level claims.",
+            "The original-data reader enforces its band, layout, and memory requirements; this workflow does not resample or change the raw input.",
         ],
     )
 

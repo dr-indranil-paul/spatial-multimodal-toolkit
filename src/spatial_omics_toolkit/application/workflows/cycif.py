@@ -547,10 +547,10 @@ def _intake_options(parameters: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(supplied, dict):
         raise ValueError("parameters.intake must be an object of RawImageIntakeConfig fields.")
     if "filename_pattern" not in supplied:
-        raise ValueError("A user-reviewed intake.filename_pattern is required; acquisition naming is not inferred from PREVAIL defaults.")
+        raise ValueError("A user-reviewed intake.filename_pattern is required; specify the acquisition naming pattern.")
     missing_assumptions = {"expected_rounds", "expected_channels"} - set(supplied)
     if missing_assumptions:
-        raise ValueError(f"Explicit acquisition assumptions are required: {sorted(missing_assumptions)}; PREVAIL round/channel defaults are not applied.")
+        raise ValueError(f"Explicit acquisition assumptions are required: {sorted(missing_assumptions)}; supply the expected rounds and channel count.")
     try:
         if not supplied.get("expected_rounds") or int(supplied["expected_channels"]) < 1:
             raise ValueError("Explicit expected_rounds (non-empty) and expected_channels (positive) are required.")
@@ -631,17 +631,17 @@ def describe() -> WorkflowDescriptor:
     return WorkflowDescriptor(
         workflow_id="cycif-raw-czi",
         modality="CycIF",
-        title="CyCIF raw CZI intake and staged image analysis",
-        description="Run canonical notebook-derived CyCIF steps in one SLURM-allocated guarded Python worker. Intake scans raw files and OME metadata; downstream stages require explicit, complete configuration and preserve tool failures.",
+        title="CyCIF raw CZI image processing",
+        description="Inventory raw CyCIF images and check their OME metadata in a SLURM-allocated Python worker. Optional conversion, registration, export, and segmentation require configuration; tool failures are reported.",
         stages=[
-            StageDefinition(stage_id="intake", title="Intake", purpose="Inventory CZI files, parse configured acquisition names, validate cycle/scene coverage and OME metadata, and write the canonical QC report.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step01_scan_intake", version=toolkit_version, role="Canonical raw-CZI intake and OME metadata QC", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/intake.py", function_name="step01_scan_intake", role="Raw-CZI intake and metadata QC")]),
-            StageDefinition(stage_id="conversion", title="Conversion", purpose="Convert raw CZI to OME-TIFF through the toolkit's SLURM-dispatch interface when explicitly configured.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step02_convert_raw_images", version=toolkit_version, role="Canonical CZI conversion", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/convert.py", function_name="step02_convert_raw_images", role="Optional CZI conversion")]),
-            StageDefinition(stage_id="registration", title="Registration", purpose="Register configured acquisition rounds against a user-selected reference round; failures are retained as stage failures.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step03_register_rounds", version=toolkit_version, role="Canonical round registration", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="step03_register_rounds", role="Optional round registration")]),
-            StageDefinition(stage_id="export", title="Marker export", purpose="Export registered scenes only after explicit marker/channel mapping confirmation; missing or mismatched mappings block export.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step04_export_registered", version=toolkit_version, role="Canonical registered-image export", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/export_images.py", function_name="step04_export_registered", role="Confirmed marker export")]),
-            StageDefinition(stage_id="segmentation", title="Segmentation", purpose="Run the configured MCMICRO segmentation workflow on exported scenes inside the allocated worker.", tools=[ToolReference(name="MCMICRO", version=toolkit_version, role="Cell segmentation", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/segment.py", function_name="step05_segment_cells", role="Toolkit MCMICRO invocation")]),
+            StageDefinition(stage_id="intake", title="Image intake and quality checks", purpose="Inventory CZI files, parse acquisition filenames, check cycle and scene coverage and OME metadata, and write a quality-control report.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step01_scan_intake", version=toolkit_version, role="Inventory raw CZI images and check OME metadata", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/intake.py", function_name="step01_scan_intake", role="Inventory raw CZI images and check metadata")]),
+            StageDefinition(stage_id="conversion", title="Convert images to OME-TIFF", purpose="Optionally convert raw CZI images to OME-TIFF through the toolkit's SLURM dispatch interface.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step02_convert_raw_images", version=toolkit_version, role="Convert CZI images", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/convert.py", function_name="step02_convert_raw_images", role="Optionally convert CZI images")]),
+            StageDefinition(stage_id="registration", title="Align imaging rounds", purpose="Register configured imaging rounds to a user-selected reference round; failures are reported as stage failures.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step03_register_rounds", version=toolkit_version, role="Register imaging rounds", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="step03_register_rounds", role="Optionally register imaging rounds")]),
+            StageDefinition(stage_id="export", title="Export marker images", purpose="Export registered scenes after the marker-to-channel mapping is confirmed; missing or mismatched mappings prevent export.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step04_export_registered", version=toolkit_version, role="Export registered images", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/export_images.py", function_name="step04_export_registered", role="Export images using the confirmed marker mapping")]),
+            StageDefinition(stage_id="segmentation", title="Segment cells", purpose="Run the configured MCMICRO cell segmentation workflow on exported scenes in the allocated worker.", tools=[ToolReference(name="MCMICRO", version=toolkit_version, role="Cell segmentation", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/segment.py", function_name="step05_segment_cells", role="Run MCMICRO through the toolkit")]),
         ],
         parameter_fields=[
-            ParameterField(name="intake.filename_pattern", label="Acquisition filename regex", kind="text", required=True, section="Intake", stage_id="intake", help_text="User-reviewed regex with named groups round, markers, slide, date, acq_id, and scene. Use explicit empty named captures for fields absent from source filenames; PREVAIL defaults are not applied."),
+            ParameterField(name="intake.filename_pattern", label="Acquisition filename regex", kind="text", required=True, section="Intake", stage_id="intake", help_text="User-reviewed regex with named groups round, markers, slide, date, acq_id, and scene. Use explicit empty named captures for fields absent from source filenames."),
             ParameterField(name="intake.expected_rounds", label="Expected rounds", kind="multiselect", required=True, default=[], dynamic_choices_key="available_rounds", section="Intake", stage_id="intake", help_text="Select expected round labels for coverage QC."),
             ParameterField(name="intake.expected_channels", label="Expected channels per image", kind="int", required=True, min_value=1, step=1, section="Intake", stage_id="intake", help_text="Enter the channel count reviewed from the raw acquisition metadata; it is not inferred from filenames or an example panel."),
             ParameterField(name="intake.raw_extension", label="Raw image extension", kind="text", default=".czi", section="Intake", stage_id="intake"),
@@ -664,9 +664,26 @@ def describe() -> WorkflowDescriptor:
             ParameterField(name="segmentation.parameters.use_gpu", label="Use GPU", kind="bool", default=False, section="Segmentation", stage_id="segmentation", advanced=True),
             ParameterField(name="segmentation.enabled", label="Run segmentation", kind="bool", default=False, section="Segmentation", stage_id="segmentation"),
         ],
-        input_description="One complete raw-CZI modality folder, project root, and project_samples.csv. Naming pattern, expected cycles/channels, and round/channel mapping are acquisition-specific parameters; no PREVAIL biological labels are assumed.",
-        output_description="Run-scoped intake inventory, checks, report, and any explicitly configured stage outputs under run_dir.",
-        limitations=["Conversion, registration, export, and segmentation are not implied by successful intake; they require explicit configuration and available tools/resources.", "No universal biological labels or cell-type configuration is assumed.", "Heavy stages run only when execute is called in the allocated Python worker."],
+        input_description=(
+            "- Select an existing project directory, CycIF image directory, and `project_samples.csv` with nonempty `biological_unit_id`, `specimen_id`, `condition`, and `tissue_source` values.\n"
+            "- Place each slide's raw CZI files directly in its own immediate subfolder of the image directory; optional OME-XML sidecars belong alongside them. Recursive preflight discovery alone does not establish this intake layout.\n"
+            "- Supply a reviewed filename regex with named captures `round`, `markers`, `slide`, `date`, `acq_id`, and `scene` (use empty captures for absent fields), a nonempty expected-round list, and a positive expected channel count.\n"
+            "- Review and confirm every discovered `slide=<slide>;scene=<scene>` group, mapping each exactly to a project `specimen_id` or `UNMAPPED`.\n"
+            "- Conversion is optional and requires an allocated SLURM worker. Registration reads original CZI files, requires confirmed grouping, a reference round, and configured zero-based DAPI channel and scale; duplicate round files block it.\n"
+            "- Export requires a selected, confirmed marker-panel CSV with `round`, `channel_index`, `marker_name`, `target_cell_compartment`, `fluorophore`, and `notes` headers. Round names must match, and channel indices must be unique and contiguous from zero within each round.\n"
+            "- Optional MCMICRO segmentation requires successful registered composite export, an allocated SLURM worker, and the configured `PAULI_FAST_SOFTWARES` runtime; its DAPI channel is one-based. Continuation from a prior stage requires matching validated checkpoints and explicit review of warning checkpoints."
+        ),
+        output_description=(
+            "- Intake writes `cycif/intake/intake_inventory.csv`, `intake_checks.csv`, `intake_qc_report.html`, and report images when reached. Failed checks, missing coverage, or unparsed filenames block downstream imaging; unavailable metadata may instead be reported as unassessed with warnings.\n"
+            "- If enabled and successful, conversion writes OME-TIFF outputs under `cycif/converted/`, with optional projections and pseudocolor composites; registration writes scene-specific artifacts under `cycif/registered/`.\n"
+            "- Successful confirmed-panel export writes composite OME-TIFF and metadata under `cycif/exported/`, with masks and QC plots depending on settings; individual PIPEX-channel exports are disabled.\n"
+            "- If enabled and successful, segmentation writes scene-specific MCMICRO files under `cycif/mcmicro/`. Intake success alone does not guarantee any downstream output."
+        ),
+        limitations=[
+            "Conversion, registration, export, and segmentation run only when configured and the required software is available.",
+            "This image-processing workflow does not classify cells into biological cell types.",
+            "Image conversion and segmentation require a configured SLURM compute worker.",
+        ],
     )
 
 

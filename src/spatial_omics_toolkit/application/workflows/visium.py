@@ -326,59 +326,87 @@ def describe() -> WorkflowDescriptor:
     return WorkflowDescriptor(
         workflow_id="visium-native-qc",
         modality="Visium",
-        title="Space Ranger Visium native counts and QC",
-        description="Read a complete Space Ranger Visium or Visium HD output bundle with published Scanpy and SpatialData-IO readers, preserve native counts, report bin/spot geometry and image scale metadata, and compute count-based QC. HD QC selects only the explicitly chosen `square_<three-digit-size>um` count table; cell/nucleus segmentation tables are not analyzed.",
+        title="Space Ranger Visium counts and quality checks",
+        description="Read complete Space Ranger Visium or Visium HD output bundles with Scanpy and SpatialData-IO, preserve the original counts, report spot or bin geometry and image scale metadata, and calculate count-based quality metrics. For HD, quality checks use only the explicitly selected `square_<three-digit-size>um` count table; cell and nucleus segmentation tables are not analyzed.",
         stages=[
             StageDefinition(
                 stage_id="bundle-intake",
-                title="Space Ranger bundle intake",
-                purpose="Validate native count matrix, tissue coordinates, tissue image and scale metadata.",
+                title="Check Space Ranger input files",
+                purpose="Validate the original count matrix, tissue coordinates, tissue image and scale metadata.",
                 tools=[
                     ToolReference(
                         name="Scanpy read_visium",
                         version=_version("scanpy"),
-                        role="Published Space Ranger Visium reader",
+                        role="Read Space Ranger Visium output",
                         documentation_url="https://scanpy.readthedocs.io/en/stable/generated/scanpy.read_visium.html",
                     ),
                     ToolReference(
                         name="spatialdata-io visium_hd",
                         version=_version("spatialdata-io"),
-                        role="Published Space Ranger Visium HD reader",
+                        role="Read Space Ranger Visium HD output",
                         documentation_url="https://spatialdata.scverse.org/projects/io/en/latest/generated/spatialdata_io.visium_hd.html",
                     ),
                 ],
                 implementations=[
                     FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_discover_bundles", role="Find supported Visium bundles"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_build_visium_hd_reader_view", role="Prepare exact native HD reader inputs"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Load native Visium/HD bundle with published readers"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_build_visium_hd_reader_view", role="Prepare the selected original HD inputs for the reader"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Load the original Visium or HD bundle with the appropriate reader"),
                 ],
             ),
             StageDefinition(
                 stage_id="count-qc",
-                title="Native count QC",
-                purpose="Summarize measured count depth and feature detection from the selected native spot/bin count table and render a bounded preview; do not use segmentation-derived cell tables.",
+                title="Count quality checks",
+                purpose="Summarize measured total counts and detected features from the selected original spot or bin count table, and create a size-limited preview. Segmentation-derived cell tables are not used.",
                 tools=[
                     ToolReference(
                         name="Scanpy",
                         version=_version("scanpy"),
-                        role="Count matrix reading and QC",
+                        role="Read count matrices and calculate quality metrics",
                         documentation_url="https://scanpy.readthedocs.io/",
                     ),
                     ToolReference(
                         name="Matplotlib",
                         version=_version("matplotlib"),
-                        role="Bounded spatial display rendering",
+                        role="Create a size-limited spatial preview",
                         documentation_url="https://matplotlib.org/",
                     ),
                 ],
                 implementations=[
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Compute native count QC"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_write_count_preview", role="Render bounded spatial count preview"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Compute count quality metrics"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_write_count_preview", role="Render a size-limited spatial count preview"),
                 ],
             ),
         ],
-        input_description="Complete Space Ranger output folder with filtered feature-barcode matrix and spatial tissue positions; Visium HD requires a complete binned_outputs resolution bundle.",
-        output_description="Run-scoped measured-count QC tables, bounded display previews, low-resolution tissue preview copies, and source-linked bundle receipts under run_dir. Native count matrices remain in their Space Ranger folders.",
+        input_description=(
+            "- Select a folder containing complete Space Ranger output bundles. Classic Visium "
+            "requires `filtered_feature_bc_matrix.h5` and `spatial/tissue_positions.csv` "
+            "or `spatial/tissue_positions_list.csv` in each bundle; incomplete discovered bundles block preflight.\n"
+            "- For Visium HD, select 2, 8, or 16 µm. Each selected `binned_outputs/square_*um` "
+            "bundle needs `filtered_feature_bc_matrix.h5`, `spatial/tissue_positions.parquet`, "
+            "and `spatial/scalefactors_json.json`; its bundle root needs exactly one "
+            "`*feature_slice.h5`. Available choices are complete sizes common to all HD bundles.\n"
+            "- Classic Visium requires Scanpy; HD requires spatialdata-io. The selected reader "
+            "must load a nonempty matrix during execution.\n"
+            "- Confirm a mapping for every displayed bundle key (the selected root is `.`) "
+            "to an exact `project_samples.csv` specimen_id or explicitly select `UNMAPPED` "
+            "if unknown. Folder names do not establish identity. The worker requires confirmation "
+            "even if workflow preflight only warns that mapping is unconfirmed.\n"
+            "- Optional display limit: 1,000–100,000 spots or bins (default 50,000); "
+            "the count matrix is not subsampled."
+        ),
+        output_description=(
+            "- Once processing runs, `visium_native_qc/bundle_inventory.json` lists discovered "
+            "bundles, including bundles that fail individually.\n"
+            "- For each successfully processed bundle, `spot_bin_qc.csv` records original "
+            "barcodes, measured total counts and detected features, with original x/y coordinates "
+            "when usable; `bundle_receipt.json` records sources, mapping, reader, scales and counts.\n"
+            "- `measured_counts_spatial_preview.png` is created only when usable coordinates "
+            "are available. A low-resolution tissue image is copied as `tissue_image_lowres.png` "
+            "only if valid, nonempty, at most 20 MiB and at most 2048 pixels per side.\n"
+            "- Original count matrices remain in their source folders. QC is unnormalized and "
+            "per spot or bin; HD segmentation tables, deconvolution, differential testing and "
+            "spatial enrichment are not analyzed."
+        ),
         parameter_fields=[
             ParameterField(
                 name="bin_size",
@@ -389,7 +417,7 @@ def describe() -> WorkflowDescriptor:
                 choices=[2, 8, 16],
                 dynamic_choices_key="visium_hd_bin_sizes",
                 unit="µm",
-                section="Native resolution",
+                section="Data resolution",
                 stage_id="bundle-intake",
                 help_text="Required for detected Visium HD bundles; choices are restricted to complete common resolutions under the selected modality folder. Classic Visium does not use this value.",
             ),
@@ -401,17 +429,17 @@ def describe() -> WorkflowDescriptor:
                 min_value=1000,
                 max_value=100000,
                 step=5000,
-                unit="native bins or spots",
+                unit="bins or spots",
                 section="Display",
                 stage_id="count-qc",
-                help_text="Caps displayed coordinate points only; measured counts and native matrices are not subsampled or changed.",
+                help_text="Limits displayed coordinate points only; measured counts and original matrices are not subsampled or changed.",
             ),
         ],
         limitations=[
-            "Spot/bin QC is descriptive and does not make spots or bins independent biological replicates.",
-            "Visium HD bins are platform-native bins, not cells; segmentation-derived cell or nucleus tables are not used by this adapter.",
+            "Spot or bin quality checks are descriptive; spots and bins are not independent biological replicates.",
+            "Visium HD bins are platform-native bins, not cells; segmentation-derived cell or nucleus tables are not used.",
             "No cell-type deconvolution, differential testing, or spatial enrichment is performed.",
-            "Count previews are user-bounded to at most 100,000 native coordinates. Only a validated low-resolution tissue image may enter the HD reader; full-resolution/hires images and segmentation tables remain source-only and are not loaded.",
+            "Count previews display at most 100,000 coordinates, as chosen by the user. Only a validated low-resolution tissue image may enter the HD reader; full-resolution/hires images and segmentation tables remain in the source files and are not loaded.",
         ],
     )
 

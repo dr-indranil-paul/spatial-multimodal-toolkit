@@ -4,17 +4,40 @@ A guided app for exploring spatial imaging and omics data. Work independently in
 
 The app provides workflows for Cyclic immunofluorescence (CycIF), hyperspectral imaging (HS), fluorescence lifetime imaging microscopy (FLIM), hematoxylin and eosin (H&E), and Visium. Integration currently offers an **exploratory serial-section alignment preview**; it does not establish biological pairing or validate an alignment.
 
+## Deployment modes
+
+The same app supports full HPC use and a read-only Streamlit Community Cloud view. Set this in the Community Cloud **App settings → Secrets**:
+
+```toml
+[toolkit]
+mode = "read_only"
+```
+
+`datasets_url` is optional; when supplied, the viewer shows it as an external Google Drive link. The URL is intentionally supplied through deployment secrets, not committed to GitHub. Drive permissions remain separate: give collaborators access to the folder as needed. The app only links to these files; it does not copy or process them in Community Cloud. For analysis, download permitted datasets to the authorized HPC workspace and run the full app there.
+
+An app launched outside an SLURM allocation is view-only by default. The full workspace requires an allocated HPC job and, when toolkit settings are configured, `mode = "hpc"`. Community Cloud's free tier is reported here as limited to 1 GB of RAM; this viewer mode avoids dataset processing and job submission. Streamlit Community Cloud supports private apps and invited viewers, so the app and GitHub repository can remain private. See [app sharing and privacy](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app). Do not place identifiable or otherwise restricted study data in a personal Google account unless institutional policy approves it.
+
+Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the Community Cloud app private. Invite the collaborator as a Cloud viewer; give separate GitHub repository access only if they need to use or inspect the code. Setting `datasets_url` under `[toolkit]` in Cloud secrets adds a Google Drive link on Home when the sharing URL is available. The app does not mount Drive or persist downloaded files. Check that the Drive folder's access permissions allow only intended users.
+
 ## Start here
 
-Choose a modality from Home. If an **Included example** is available, run it to see the workflow and its outputs; no project setup is needed. Examples demonstrate technical QC and are not analyses of your study cohort. The app describes the expected inputs and outputs before you start.
+Choose a workspace from the cards in the center of Home, including optional Integration. Use **Open project** to set up a study folder, sample sheet, and results location. Inside a workspace, use the top navigation to return **Home** or open **Project**.
+
+A modality workspace opens on **Introduction**, which describes the selected workflow's purpose, detailed input and output bullets, shared own-data prerequisites, and limitations. Its stage-and-tool diagram is an overview of the declared workflow, not a record of a particular run: notes identify conditional pathways, so not every stage or tool necessarily applies to every input or configuration. Outputs depend on the selected stages and successful execution; passing input checks does not guarantee them. Expand **Methods & source** for implementation-level detail; it shows current source definitions, which may differ from those used by an earlier saved run. This page is informational: it does not check inputs, start a run, or change results. Use the remaining workspace tabs to continue:
+
+- **Data & settings** to choose example or own-data inputs and configure the selected workflow.
+- **Run** to check inputs, review requested decisions, and start or monitor work.
+- **Quality control**, **Results**, and **Files** to inspect the selected run's recorded review information and outputs.
+
+If an **Included example** is available, choose it in the input-mode selector and run it from **Data & settings** or **Run**; no project setup is needed. Examples demonstrate technical QC and are not analyses of your study cohort.
 
 To use your own data, select **Use my own data** and follow **Data & settings**:
 
-1. Choose the study folder, that modality’s input files, and an output folder.
-2. If the analysis needs project sample information, choose the reviewed `project_samples.csv` or download the template and fill it in from study records.
-3. Choose the data layout: one sample, multiple samples, or a tissue microarray (TMA).
-4. Select **Run**, choose **Check inputs**, and resolve any requests for mapping or review before starting the run.
-5. Follow progress in **Run**; open **Quality control** to review warnings, **Results** to explore plots and reports, and **Files** to access outputs. To continue a verified CycIF run, choose **Continue from a verified run** in its settings. The app creates a new run and reuses completed stages only when their inputs and settings still match.
+1. Choose existing project and modality folders under the approved workspace, and an output folder under that workspace, outside the modality folder. The modality folder may be outside the project folder.
+2. Select a reviewed `project_samples.csv` under the project folder. It is required for every submitted own-data run, including technical QC.
+3. Choose the data layout and the workflow-specific inputs and settings; specify SLURM resources (1–32 CPUs, 1–512 GB memory, and an 8h, 24h, 48h, 72h, or 168h time limit).
+4. Select **Run**, choose **Check inputs**, and review the discovered groups. Where groups are returned, confirm an exact entry for every displayed key: a sample-sheet specimen ID or explicit `UNMAPPED` for technical QC. H&E intake returns no groups and needs no image mapping. The cell-feature table requires actual specimen IDs, either by confirmed core mapping or a confirmed existing specimen-ID column. Integration requires confirmed entries for both image keys; its report remains unmapped and does not establish biological pairing. Clinical HS stops after metadata QC if any mapping is `UNMAPPED`.
+5. Start the run and follow progress in **Run**; open **Quality control** to review warnings, **Results** to explore plots and reports, and **Files** to access outputs. To continue a verified CycIF run, choose **Continue from a verified run** in its settings. The app creates a new run and reuses completed stages only when their inputs and settings still match.
 
 Source files are read-only. Results are written to a new run folder and do not overwrite earlier runs. Each modality keeps its own settings and run history.
 

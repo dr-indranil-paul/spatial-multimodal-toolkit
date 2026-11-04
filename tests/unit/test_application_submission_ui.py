@@ -65,6 +65,7 @@ def test_start_requires_confirmation_and_fresh_preflight(
     monkeypatch.setattr(service, "submit_request", submit)
     app = AppTest.from_file(str(APP), default_timeout=20)
     app.session_state["spatial_page"] = "H&E"
+    app.session_state["workspace_section_H&E"] = "Setup"
     app.session_state["data_mode_H&E"] = "own"
     app.session_state["project_root_path"] = str(project)
     app.session_state["annotation_csv"] = str(metadata)

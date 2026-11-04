@@ -23,7 +23,7 @@ from spatial_omics_toolkit.application.workflows.registry import list_workflows
 from spatial_omics_toolkit.application.examples import ExampleSpec
 
 
-st.set_page_config(page_title="Spatial Toolkit", layout="wide", initial_sidebar_state="auto")
+st.set_page_config(page_title="Spatial Toolkit", layout="wide", initial_sidebar_state="collapsed")
 
 
 def child_directories(path_text: str) -> list[str]:
@@ -746,9 +746,8 @@ def _render_example_description(example: ExampleSpec, *, compact: bool = False) 
 
 def _render_project() -> None:
     st.title("Project")
-    st.write("Set up this page when you are ready to analyse your own data. A project groups the files and sample information for one study. To explore the app first, open any modality and run its included example—no project setup is needed.")
-    left, right = st.columns([1, 1])
-    with left:
+    st.write("Set up your study folder, sample sheet and results location; examples do not require project setup.")
+    with st.container(border=True, key="project_step_folder"):
         st.subheader("1. Choose the study folder")
         st.write("Choose the folder containing your study's data and sample sheet. The app reads your originals; it will not move, rename, or overwrite them.")
         if st.button("Browse project folder…", key="browse_project_root"):
@@ -770,6 +769,7 @@ def _render_project() -> None:
         st.session_state["_annotation_default_root"] = str(root)
         metadata_widget = "annotation_csv_widget"
         st.session_state[metadata_widget] = current_metadata
+    with st.container(border=True, key="project_step_samples"):
         st.subheader("2. Add the sample sheet")
         st.write("This CSV tells the app which physical specimens and independent biological units are represented. Download the blank template, fill it with reviewed study identifiers, and select the completed file.")
         with st.expander("How to fill in the sample sheet", expanded=False):
@@ -786,16 +786,7 @@ def _render_project() -> None:
             "Download metadata template", data=project_samples_template(),
             file_name="project_samples.csv", mime="text/csv",
         )
-        st.subheader("3. Choose where results are saved")
-        st.write("Choose a results folder outside the raw input folder. Each run gets a new subfolder, so earlier results remain intact. Each modality can keep its own output location.")
-        output_widget = "project_output_root_widget"
-        _restore_widget_state(output_widget, "output_root")
-        st.text_input(
-            "Default output root", key=output_widget,
-            on_change=_persist_widget_state, args=(output_widget, "output_root"),
-        )
-    with right:
-        st.subheader("Check your sample sheet")
+        st.markdown("**Sample sheet review**")
         annotation = Path(str(st.session_state.get("annotation_csv", ""))).expanduser()
         if annotation.is_file():
             rows, errors = read_project_samples(annotation)
@@ -806,8 +797,16 @@ def _render_project() -> None:
                 st.caption("This check verifies the required fields, not the biological identities. Confirm those against your study records before assigning inputs to specimens.")
                 st.dataframe(rows[:200], use_container_width=True, hide_index=True)
         else:
-            st.info("No sample sheet is selected yet. Download the template on the left, add your study's information, and choose the completed CSV. You can still run every included example without doing this.")
-
+            st.info("No sample sheet is selected yet. Download the template, add your study's information, and choose the completed CSV. You can still run every included example without doing this.")
+    with st.container(border=True, key="project_step_results"):
+        st.subheader("3. Choose where results are saved")
+        st.write("Choose a results folder outside the raw input folder. Each run gets a new subfolder, so earlier results remain intact. Each modality can keep its own output location.")
+        output_widget = "project_output_root_widget"
+        _restore_widget_state(output_widget, "output_root")
+        st.text_input(
+            "Default output root", key=output_widget,
+            on_change=_persist_widget_state, args=(output_widget, "output_root"),
+        )
 
 def _modality_run_request(
     descriptor: WorkflowDescriptor, parameters: dict[str, Any], modality: str,
@@ -889,7 +888,7 @@ def _render_mapping(
             st.error("Core-map group_key values must match the discovered acquisition groups exactly. Correct the CSV and check inputs again.")
             valid = False
     if descriptor.workflow_id == "integration.serial_section_alignment":
-        st.info("The moving H&E and reference fluorescence/HS files remain UNMAPPED. Choose the two source files and explicitly confirm them in Setup; this confirms candidate inputs for exploratory QC only, not biological pairing or an accepted alignment.")
+        st.info("The moving H&E and reference fluorescence/HS files remain UNMAPPED. Choose the two source files and explicitly confirm them in Data & settings; this confirms candidate inputs for exploratory QC only, not biological pairing or an accepted alignment.")
         confirmed = parameters.get("candidate_sources_confirmed") is True
         if len(groups) != 2:
             st.error("Integration requires exactly the two explicitly selected source files; identity mapping is not performed.")
@@ -1110,9 +1109,9 @@ def _render_cycif_continuation(descriptor: WorkflowDescriptor) -> dict[str, Any]
     return continuation
 
 
-def _render_modality(modality: str, descriptors: list[WorkflowDescriptor]) -> None:
+def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, read_only: bool = False) -> None:
     from spatial_omics_toolkit.application.ui.results import render_run, select_run
-    from spatial_omics_toolkit.application.ui.presentation import MODALITY_LABELS
+    from spatial_omics_toolkit.application.ui.presentation import MODALITY_LABELS, render_stage_flow
     from spatial_omics_toolkit.application.ui.implementation import render_step_sources
 
     label = MODALITY_LABELS.get(modality, modality)
@@ -1120,16 +1119,19 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor]) -> No
     if not descriptors:
         st.info("No implemented workflow is currently available for this modality.")
         return
-    mode_key = f"data_mode_{modality}"
-    mode_state_key = f"{mode_key}_state"
-    st.session_state.setdefault(mode_key, st.session_state.get(mode_state_key, "example"))
-    if st.session_state[mode_key] not in {"example", "own"}:
-        st.session_state[mode_key] = "example"
-    mode = st.radio(
-        "Input mode", ["example", "own"], horizontal=True, key=mode_key,
-        format_func=lambda value: "Included example" if value == "example" else "Use my own data",
-        on_change=_persist_widget_state, args=(mode_key, mode_state_key),
-    )
+    if read_only:
+        mode = "own"
+    else:
+        mode_key = f"data_mode_{modality}"
+        mode_state_key = f"{mode_key}_state"
+        st.session_state.setdefault(mode_key, st.session_state.get(mode_state_key, "example"))
+        if st.session_state[mode_key] not in {"example", "own"}:
+            st.session_state[mode_key] = "example"
+        mode = st.radio(
+            "Input mode", ["example", "own"], horizontal=True, key=mode_key,
+            format_func=lambda value: "Included example" if value == "example" else "Use my own data",
+            on_change=_persist_widget_state, args=(mode_key, mode_state_key),
+        )
     example = None
     workflow_key = f"selected_workflow_{confirmation_key(modality)}"
     workflow_state_key = f"selected_workflow_state_{modality}"
@@ -1171,17 +1173,67 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor]) -> No
             st.session_state[workflow_key] = title
             st.session_state[workflow_state_key] = title
         descriptor = descriptors[titles.index(title)]
-    section_key = f"workspace_section_{modality}"
-    section_state_key = f"workspace_section_state_{modality}"
-    if section_key not in st.session_state:
-        st.session_state[section_key] = str(st.session_state.get(section_state_key, "Setup"))
-    section = st.radio(
-        "Workflow steps", ["Setup", "Run", "Quality control", "Results", "Files"],
-        horizontal=True, key=section_key,
-        on_change=_persist_widget_state, args=(section_key, section_state_key),
-        format_func=lambda value: "Data & settings" if value == "Setup" else value,
-        label_visibility="collapsed",
-    )
+    if read_only:
+        section = "Introduction"
+    else:
+        section_key = f"workspace_section_{modality}"
+        section_state_key = f"workspace_section_state_{modality}"
+        if section_key not in st.session_state:
+            st.session_state[section_key] = str(st.session_state.get(section_state_key, "Introduction"))
+        section = st.radio(
+            "Workflow", ["Introduction", "Setup", "Run", "Quality control", "Results", "Files"],
+            horizontal=True, key=section_key,
+            on_change=_persist_widget_state, args=(section_key, section_state_key),
+            format_func=lambda value: "Data & settings" if value == "Setup" else value,
+            label_visibility="collapsed",
+        )
+    if section == "Introduction":
+        st.subheader(descriptor.title)
+        st.write(descriptor.description)
+        st.subheader("Analysis stages")
+        render_stage_flow(descriptor)
+        st.subheader("Inputs")
+        st.markdown(descriptor.input_description)
+        st.subheader("Shared prerequisites for your own data")
+        shared_inputs = [
+            "Select an existing project folder and input folder in the approved workspace. "
+            "The input folder can be outside the project folder.",
+            "Place a reviewed `project_samples.csv` inside the project folder. It must contain at least one row "
+            "and nonempty `biological_unit_id`, `specimen_id`, `condition`, and `tissue_source` values. "
+            "Each `specimen_id` must be unique; biological-unit IDs may repeat across specimens.",
+            "Choose an output folder in the approved workspace, outside the input folder. "
+            "Select SLURM resources: 1–32 CPUs, 1–512 GB memory, and an 8h, 24h, 48h, 72h, or 168h time limit.",
+        ]
+        if descriptor.workflow_id == "cycif.tabular_analysis":
+            shared_inputs.append(
+                "Confirm specimen identities using either an existing specimen-ID column or a core-to-specimen map."
+            )
+        elif descriptor.workflow_id == "he-image-intake":
+            shared_inputs.append("Image-to-specimen mapping is not required for this image-inventory workflow.")
+        else:
+            shared_inputs.append(
+                "For every displayed image or acquisition group, confirm an exact sample-sheet `specimen_id`, "
+                "or select `UNMAPPED` when its specimen is unknown. Unmapped groups are for technical QC only."
+            )
+        st.markdown("\n".join(f"- {item}" for item in shared_inputs))
+        st.write(
+            "These are requirements for submitted own-data runs. Included examples use their own fixed inputs "
+            "and technical recipe; they do not require your project setup. Input checking does not guarantee "
+            "successful execution or all described outputs."
+        )
+        st.subheader("Outputs")
+        st.markdown(descriptor.output_description)
+        st.subheader("Scope and limitations")
+        if descriptor.limitations:
+            st.markdown("\n".join(f"- {limitation}" for limitation in descriptor.limitations))
+        else:
+            st.caption("No additional workflow-specific limitations are declared.")
+        render_step_sources(descriptor.workflow_id, key_prefix=f"introduction_{modality}")
+        st.write(
+            "This page describes the selected workflow. It does not check inputs, start a run, "
+            "or change existing results."
+        )
+        return
     path_key = f"modality_folder_{modality}"
     if section == "Setup" and mode == "example":
         st.subheader("Start with the included example")
@@ -1256,7 +1308,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor]) -> No
             )
             st.caption("Choose the folder that contains the original modality files; do not rename files to invent sample identities. The toolkit reads these sources and writes a separate run bundle.")
             with st.expander("Supported inputs and an example folder pattern"):
-                st.write(descriptor.input_description)
+                st.markdown(descriptor.input_description)
                 st.write("Pattern: project folder → modality input folder → original acquisition files (or the workflow's documented table/image inputs). Keep original names and organization; use the review controls below to assign identity.")
         output_key = f"modality_output_{modality}"
         output_widget = f"modality_output_widget_{modality}"
@@ -1644,42 +1696,78 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor]) -> No
         render_run(Path(run_dir), {"Quality control": "qc", "Results": "results", "Files": "files"}[section])
     else:
         st.info(
-            "No run is available here yet. Return to Setup to run the file-backed example, or switch to your own data and complete its checks."
+            "No run is available here yet. Return to Data & settings to run the file-backed example, or switch to your own data and complete its checks."
             if mode == "example" else
-            "No own-data run is available yet. Choose your files in Setup, then check inputs and confirm the group mappings."
+            "No own-data run is available yet. Choose your files in Data & settings, then check inputs and confirm the group mappings."
         )
         st.button(
-            "Go to Setup", key=f"setup_from_results_{modality}",
+            "Go to Data & settings", key=f"setup_from_results_{modality}",
             on_click=_set_modality_section, args=(modality, "Setup"),
         )
 
 
 def main() -> None:
-    from spatial_omics_toolkit.application.ui.presentation import (
-        MODALITY_LABELS, apply_theme, render_home,
-    )
+    from spatial_omics_toolkit.application.ui.presentation import apply_theme, render_home
 
     apply_theme()
-    _initialize_state()
     workflows = list_workflows()
     modalities = ("CycIF", "HS", "FLIM", "H&E", "Visium", "Integration")
     by_modality = {name: [workflow for workflow in workflows if workflow.modality == name] for name in modalities}
-    destinations = ["Home", "Project", *modalities]
-    with st.sidebar:
-        st.markdown("## Spatial Toolkit")
-        st.caption("A clear workspace for each modality.")
-        page = st.radio(
-            "Workspace", destinations, key="spatial_page",
-            format_func=lambda value: MODALITY_LABELS.get(value, value),
+    page = st.session_state.setdefault("spatial_page", "Home")
+    try:
+        settings = st.secrets.get("toolkit")
+    except FileNotFoundError:
+        settings = None
+    # A full workspace is available only inside an allocated HPC job; every other host is view-only.
+    hpc_allocation = bool(os.environ.get("SLURM_JOB_ID"))
+    read_only = not hpc_allocation or (
+        settings is not None and (
+            not hasattr(settings, "get") or settings.get("mode") != "hpc"
         )
-    if st.session_state.get("_server_picker_open"):
+    )
+    dataset_url = settings.get("datasets_url") if hasattr(settings, "get") else None
+    if not read_only:
+        _initialize_state()
+    if read_only and page == "Home":
+        st.info("This instance is view-only. Workflows execute on authorized HPC resources.")
+    if not read_only and st.session_state.get("_server_picker_open"):
         server_path_picker_dialog()
     if page == "Home":
-        render_home(lambda destination: st.session_state.__setitem__("spatial_page", destination))
-    elif page == "Project":
-        _render_project()
+        render_home(
+            lambda destination: st.session_state.__setitem__("spatial_page", destination),
+            read_only=read_only,
+            dataset_url=dataset_url if isinstance(dataset_url, str) else None,
+        )
     else:
-        _render_modality(page, by_modality[page])
+        with st.container(key="app_navigation"):
+            if page == "Project":
+                home_column, current_column = st.columns([1, 3], gap="small")
+                project_column = None
+            else:
+                home_column, project_column, current_column = st.columns([1, 1, 2], gap="small")
+            with home_column:
+                st.button(
+                    "Home", key="navigate_home", use_container_width=True,
+                    on_click=lambda: st.session_state.__setitem__("spatial_page", "Home"),
+                )
+            if project_column is not None:
+                with project_column:
+                    st.button(
+                        "Project", key="navigate_project", use_container_width=True,
+                        on_click=lambda: st.session_state.__setitem__("spatial_page", "Project"),
+                    )
+            with current_column:
+                st.caption(f"Current: {page}")
+        if read_only:
+            st.info("This instance is view-only. Workflows execute on authorized HPC resources.")
+        if page == "Project":
+            if read_only:
+                st.title("Project")
+                st.info("Project setup is available on authorized HPC resources, not in this view-only instance.")
+            else:
+                _render_project()
+        else:
+            _render_modality(page, by_modality[page], read_only=read_only)
 
 
 main()

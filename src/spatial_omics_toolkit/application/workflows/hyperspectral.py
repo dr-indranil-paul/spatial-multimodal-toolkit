@@ -28,20 +28,31 @@ def describe() -> WorkflowDescriptor:
     source_tool = ToolReference(
         name="clinical_roi_hyperspectral.py",
         version="project source; verified SHA-256 recorded in cache receipts",
-        role="Canonical HS metadata audit and exploratory phasor analysis",
+        role="Audit hyperspectral metadata and perform exploratory phasor analysis",
     )
     return WorkflowDescriptor(
         workflow_id=_WORKFLOW_ID,
         modality="HS",
-        title="Clinical ROI hyperspectral audit and phasors",
-        description="Runs the existing clinical HS source workflow against its strict final manifest and evidence ledgers, retaining separate TMA analyses.",
+        title="Clinical ROI hyperspectral metadata and phasor analysis",
+        description="Run the existing clinical hyperspectral analysis using the reviewed final manifest and supporting records. TMA1 and TMA2 are analyzed separately.",
         stages=[
-            StageDefinition(stage_id="metadata_audit", title="Metadata audit", purpose="Validate reviewed HS assignment evidence and audit native metadata and exact bands.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="load_final_analysis_manifest", role="Load reviewed source manifest"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="audit_spectral_channel_maps", role="Audit exact spectral bands")]),
-            StageDefinition(stage_id="source_phasors", title="Source-bound phasors", purpose="Compute per-TMA first-harmonic summaries with the canonical exact-band map and integrity cache.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_spectral_phasors", role="Compute per-TMA source-bound phasors")]),
-            StageDefinition(stage_id="exploratory", title="Exploratory diagnostics", purpose="Optional per-TMA filter or GMM sensitivity using the declared source APIs; IDs are not tissue classes.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_filter_sensitivity", role="Optional filter sensitivity"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_gmm_sensitivity", role="Optional GMM sensitivity")]),
+            StageDefinition(stage_id="metadata_audit", title="Check metadata", purpose="Validate reviewed hyperspectral assignments and check acquisition metadata and exact spectral bands.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="load_final_analysis_manifest", role="Load the reviewed source manifest"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="audit_spectral_channel_maps", role="Check exact spectral bands")]),
+            StageDefinition(stage_id="source_phasors", title="Analyze spectral phasors", purpose="Compute first-harmonic summaries for each TMA separately, using the exact spectral-band map and an integrity-checked cache.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_spectral_phasors", role="Compute phasors separately for each TMA")]),
+            StageDefinition(stage_id="exploratory", title="Explore sensitivity", purpose="Optionally assess sensitivity to filtering or Gaussian mixture model (GMM) settings separately for each TMA; cluster IDs are not tissue classes.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_filter_sensitivity", role="Assess filter sensitivity"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_gmm_sensitivity", role="Assess GMM sensitivity")]),
         ],
-        input_description="Project tree with canonical source module, strict final HS manifest, assignment manifest, queue, selection ledger, settings manifest, and the exact reviewed raw acquisitions referenced by them.",
-        output_description="Run-local metadata and band-map tables, separate per-TMA phasor summaries/figures/receipts, cache and cache-event log.",
+        input_description=(
+            "- A project containing the canonical `clinical_roi_hyperspectral.py` at its expected source path, or directly in the modality folder.\n"
+            "- The reviewed study handoff: uniquely located `hyperspectral_final_analysis_manifest.csv`, `hyperspectral_tma1_manual_core_selection.csv`, `hyperspectral_assignment_and_processing_manifest.csv`, `hyperspectral_settings_provisional_working_set.csv`, and `hyperspectral_assignment_and_processing_queue.csv`. The final manifest needs `path`, `assigned_tma`, and `confirmed_core_id` columns.\n"
+            "- The exact reviewed raw CZI acquisitions referenced by the handoff: one for each A1–C3 core in TMA1 and TMA2, 18 acquisitions in total. Evidence and raw files are validated during execution; this is a study-specific workflow.\n"
+            "- The shared sample CSV and confirmed acquisition-to-specimen mapping. Every acquisition must map to a sample-sheet specimen for phasor analysis; `UNMAPPED` permits metadata QC only.\n"
+            "- Optional per-channel memory and thread settings, and an optional filter or GMM exploratory diagnostic."
+        ),
+        output_description=(
+            "- After evidence validation and metadata audit: metadata and exact spectral-band tables, plus a run-local cache and cache-event record.\n"
+            "- With complete confirmed specimen mappings: separate TMA1 and TMA2 first-harmonic per-acquisition summaries, spectrum and phasor figures, and analysis records. Do not compare raw intensity across TMAs.\n"
+            "- Only when selected and completed: separate per-TMA filter or GMM diagnostic outputs; clusters are exploratory spectral diagnostics, not tissue classes.\n"
+            "- An `UNMAPPED` acquisition stops analysis after metadata QC with a warning. Invalid evidence, missing inputs, or processing errors can stop the run and leave partial outputs."
+        ),
         parameter_fields=[
             ParameterField(
                 name="max_working_bytes", label="Maximum working memory per channel",
@@ -58,7 +69,7 @@ def describe() -> WorkflowDescriptor:
                 name="exploratory_diagnostic", label="Exploratory diagnostic",
                 kind="select", default="none", choices=["none", "filter", "gmm"],
                 section="Exploratory diagnostics", stage_id="exploratory",
-                help_text="Optional canonical per-TMA filter or GMM sensitivity; does not name tissue classes.",
+                help_text="Optionally assess filter or GMM sensitivity for each TMA; clusters are not tissue classes.",
             ),
             ParameterField(
                 name="cluster_counts", label="GMM cluster counts", kind="multiselect",
@@ -70,7 +81,7 @@ def describe() -> WorkflowDescriptor:
                 name="max_samples", label="Maximum phasor samples per acquisition",
                 kind="int", default=50000, min_value=1, max_value=50000,
                 section="Exploratory diagnostics", stage_id="exploratory", advanced=True,
-                help_text="Systematic raw G/S sample cap for canonical GMM diagnostics.",
+                help_text="Maximum number of systematically selected raw G/S phasor samples per acquisition for GMM diagnostics.",
             ),
             ParameterField(
                 name="random_state", label="GMM random state", kind="int", default=0,
@@ -80,9 +91,9 @@ def describe() -> WorkflowDescriptor:
             ),
         ],
         limitations=[
-            "Human-reviewed identities and selections are required; no inference or fallback to provisional inputs.",
-            "TMA1 and TMA2 remain separate; cross-TMA raw-intensity comparison is prohibited.",
-            "Exploratory spectral clusters are diagnostics, not tissue-class labels.",
+            "Human-reviewed identities and selections are required; the workflow does not infer them or fall back to provisional inputs.",
+            "TMA1 and TMA2 are analyzed separately; do not compare raw intensity between them.",
+            "Exploratory spectral clusters are diagnostic groups, not tissue-class labels.",
             "Display galleries are review aids, not quantitative classifications.",
         ],
     )

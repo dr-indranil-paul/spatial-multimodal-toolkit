@@ -32,12 +32,12 @@ from spatial_omics_toolkit.cycif.spatial_null import step11_spatial_null
 
 
 LIMITATIONS = [
-    "This workflow consumes an explicit already-segmented MCMICRO cell-feature table; it does not run raw-image intake, registration, or segmentation.",
-    "step13_pseudobulk is intentionally unavailable for continuous MCMICRO intensity values; this workflow does not treat intensities as raw counts.",
+    "This workflow analyzes a selected, already-segmented MCMICRO cell-feature table; it does not inventory, register, or segment raw images.",
+    "step13_pseudobulk is unavailable for continuous MCMICRO intensity values; this workflow does not treat intensities as raw counts.",
     "step10 spatial features are descriptive only. Spatial association inference requires an explicitly configured step11 spatial null.",
-    "step11 raw p-values are always Exploratory in this adapter; selection-adjusted full-pipeline reruns are not implemented.",
+    "step11 raw p-values are always exploratory; the workflow does not rerun the full pipeline to adjust for selection.",
     "Spatial values use explicitly declared x/y coordinate units and frame; no scale conversion or coordinate transform is inferred.",
-    "step12 comparisons use one value per independent biological_unit_id, aggregated directly from raw cells; cells and imaging cores are never inferential n.",
+    "step12 comparisons use one value per independent biological_unit_id, aggregated directly from raw cells; cells and imaging cores are not treated as independent biological replicates.",
 ]
 
 
@@ -388,31 +388,39 @@ def _jsonable(value: Any) -> Any:
 
 
 def describe() -> WorkflowDescriptor:
-    tool = [ToolReference(name="spatial-omics-toolkit", version=_version(), role="cell-table analysis")]
+    tool = [ToolReference(name="spatial-omics-toolkit", version=_version(), role="Analyze cell-feature tables")]
     return WorkflowDescriptor(
         workflow_id="cycif.tabular_analysis",
         modality="CycIF",
-        title="CyCIF Cell-Feature Table Analysis",
-        description="Analyze an explicitly selected MCMICRO segmented cell-feature table using opt-in CyCIF step06-step12 analyses.",
+        title="CyCIF cell-feature table analysis",
+        description="Analyze a selected MCMICRO table of segmented-cell features using the optional analysis stages configured below.",
         stages=[
             StageDefinition(
                 stage_id=f"step{n:02d}",
                 title=title,
                 purpose=purpose,
                 tools=tool,
-                implementations=[FunctionReference(source_file=source_file, function_name=function_name, role="Optional configured analysis step")],
+                implementations=[FunctionReference(source_file=source_file, function_name=function_name, role="Run the optional configured analysis step")],
             )
             for n, title, purpose, source_file, function_name in [
-                (6, "Intensity QC", "Background correction and marker SNR QC.", "spatial_omics_toolkit/cycif/qc.py", "step06_qc_filter_intensities"),
-                (7, "Cell classification", "Explicitly configured per-core marker gating.", "spatial_omics_toolkit/cycif/classify.py", "step07_classify_cells"),
-                (8, "Program scoring", "Explicitly configured per-cell program scores.", "spatial_omics_toolkit/cycif/classify.py", "step08_score_programs"),
-                (9, "Aggregation", "Aggregate raw cells to imaging core or biological unit.", "spatial_omics_toolkit/cycif/aggregate.py", "step09_aggregate_per_core"),
-                (10, "Spatial features", "Descriptive spatial features; no inferential claim.", "spatial_omics_toolkit/cycif/spatial_features.py", "step10_spatial_features"),
-                (11, "Spatial null", "Explicit selected-pair spatial label permutation.", "spatial_omics_toolkit/cycif/spatial_null.py", "step11_spatial_null"),
-                (12, "Group comparison", "Two-group comparison on direct biological-unit aggregates only.", "spatial_omics_toolkit/cycif/compare.py", "step12_compare_groups"),
+                (6, "Intensity quality control", "Correct background and assess marker signal-to-noise ratios.", "spatial_omics_toolkit/cycif/qc.py", "step06_qc_filter_intensities"),
+                (7, "Classify cells", "Classify cells within each core using configured marker thresholds.", "spatial_omics_toolkit/cycif/classify.py", "step07_classify_cells"),
+                (8, "Score marker programs", "Calculate per-cell program scores from configured marker definitions.", "spatial_omics_toolkit/cycif/classify.py", "step08_score_programs"),
+                (9, "Summarize cells", "Summarize cells by imaging core or biological unit.", "spatial_omics_toolkit/cycif/aggregate.py", "step09_aggregate_per_core"),
+                (10, "Describe spatial features", "Calculate descriptive spatial features without making inferential claims.", "spatial_omics_toolkit/cycif/spatial_features.py", "step10_spatial_features"),
+                (11, "Test spatial associations", "Permute spatial labels for a selected pair of cell types; the resulting p-values are exploratory.", "spatial_omics_toolkit/cycif/spatial_null.py", "step11_spatial_null"),
+                (12, "Compare groups", "Compare two groups using summaries calculated directly from cells for each biological unit.", "spatial_omics_toolkit/cycif/compare.py", "step12_compare_groups"),
             ]
         ],
-        input_description="An exact existing MCMICRO cell-feature CSV/TSV/Parquet path under the selected modality folder or run artifacts; explicit column map; confirmed core-to-specimen mapping in project_samples.csv.",
+        input_description=(
+            "- Select an exact existing, already-segmented MCMICRO cell-feature table in the CycIF directory or current run artifacts: CSV, TSV/`.txt`, or Parquet/`.pq` (CSV and TSV/`.txt` may be gzip-compressed). This workflow does not process raw images or segment cells.\n"
+            "- Map existing acquisition-group, core/imaging-field ID, x and y coordinate columns and one or more continuous marker-intensity columns. Group and core IDs must be present, and each core must belong to exactly one acquisition group; coordinates are required even without spatial analysis.\n"
+            "- Explicitly confirm either a complete exact core-to-`specimen_id` mapping or use of an existing specimen-ID column, not both. Each core must resolve to one specimen in `project_samples.csv`, whose required fields include `specimen_id`, `biological_unit_id`, `condition`, and `tissue_source`.\n"
+            "- Every numerical stage is optional and requires its own JSON-object configuration. Intensity QC uses background and signal percentiles; classification requires an explicit marker configuration; program scoring requires definitions and marker z-scores from classification or the input.\n"
+            "- Aggregation requires a `core_id` or `biological_unit_id` level. Aggregation and spatial stages require classification or an existing configured cell-type column.\n"
+            "- Spatial stages require declared coordinate units and frame; micrometer units require confirmation of verified source scale. Descriptive features require positive radii. Spatial null additionally requires a selected source/target pair, positive `k` and permutation count, selection declarations and confirmation, and matching pair and `k` in spatial features; an optional tissue-mask column restricts permutations.\n"
+            "- Group comparison requires direct cell-to-biological-unit aggregation, an explicit metrics list, exactly two conditions, one condition per unit, and at least two independent biological units per condition."
+        ),
         parameter_fields=[
             ParameterField(name="feature_table_path", label="MCMICRO cell-feature table", kind="path", required=True, section="Input", help_text="Select the exact existing CSV/TSV/Parquet table produced upstream by MCMICRO; no filename inference, raw-image processing, or segmentation is performed."),
             ParameterField(name="columns.acquisition_group", label="Acquisition-group column", kind="select", required=True, dynamic_choices_key="input_table_columns", section="Input", help_text="Exact source table column identifying acquisition group."),
@@ -435,7 +443,12 @@ def describe() -> WorkflowDescriptor:
             ParameterField(name="spatial_null", label="Step 11 spatial-null configuration", kind="config_file", section="Optional analysis stages", stage_id="step11", help_text="Optional JSON object enables step11; REQUIRED source_type, target_type, k, n_permutations, pre_specified, selection_after_viewing_data, pre_specification_confirmed=true, and selection_statement. pre_specification_statement is also required if pre_specified=true. The adapter records the statement and confirmation time, but because selection-adjusted full-pipeline reruns are not implemented, every selected-pair p-value remains Exploratory regardless of checkbox. Optional tissue_mask_column restricts swaps; absent means whole-core permutations."),
             ParameterField(name="compare_groups", label="Step 12 group-comparison configuration", kind="config_file", section="Optional analysis stages", stage_id="step12", help_text="Optional JSON object enables step12; REQUIRED metrics list. Runs only after direct raw-cell aggregation to biological_unit_id with exactly one row per independent unit, two mapped groups, complete project_samples.csv mapping, and at least two independent units per group."),
         ],
-        output_description="Stage-specific tables and QC plots, resolved parameter/provenance record, stage statuses, and limitations under run_dir/cycif_analysis.",
+        output_description=(
+            "- Run records under `cycif_analysis/` include resolved parameters, input mapping, stage statuses, and limitations; a blocked preflight records the available parameters, statuses, and limitations.\n"
+            "- Only selected stages that execute successfully produce their products: QC-corrected cells and marker-SNR JSON, classified or program-scored cells, core or biological-unit aggregates, descriptive spatial features and coordinate metadata, spatial-null results and metadata, and biological-unit group comparisons. QC plots are collected when produced.\n"
+            "- Spatial-null selected-pair p-values are exploratory, including for pre-specified pairs; selection-adjusted full-pipeline reruns are not implemented. Without a tissue mask, permutations span the whole core.\n"
+            "- With no stages selected, the workflow warns and performs no numerical analysis. Continuous intensities are not raw counts, and pseudobulk is not offered."
+        ),
         limitations=LIMITATIONS,
     )
 
