@@ -117,13 +117,32 @@ def test_home_exposes_all_destinations_and_current_navigation(tmp_path: Path) ->
     assert app.session_state["spatial_page"] == "Home"
 
 
-def test_missing_hpc_allocation_defaults_to_read_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("settings", [None, {}, {"mode": "hpc"}, {"datasets_url": "https://drive.google.com/drive/folders/test-folder"}])
+def test_full_workspace_without_slurm_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settings: dict[str, str] | None
+) -> None:
     monkeypatch.delenv("SLURM_JOB_ID", raising=False)
-    app = _app(tmp_path, "Project").run()
+    monkeypatch.setattr("shutil.which", lambda executable: None)
+    app = _app(tmp_path)
+    if settings is not None:
+        app.secrets["toolkit"] = settings
+    app.run()
     _assert_clean(app)
-    assert any("view-only" in item.value for item in app.info)
-    assert not app.text_input
-    assert [button.label for button in app.button] == ["Home"]
+    assert any("sbatch was not found" in item.value for item in app.info)
+    if settings and "datasets_url" in settings:
+        assert any(settings["datasets_url"] in item.value for item in app.markdown)
+    app.button(key="home_open_project").click().run()
+    _assert_clean(app)
+    assert app.text_input(key="project_root_widget")
+    _open_modality(app, "CycIF")
+    section = app.radio(key="workspace_section_CycIF")
+    assert section.options == ["Introduction", "Data & settings", "Run", "Quality control", "Results", "Files"]
+    for value in ("Setup", "Run", "Quality control", "Results", "Files"):
+        app.radio(key="workspace_section_CycIF").set_value(value).run()
+        _assert_clean(app)
+        assert app.radio(key="workspace_section_CycIF").value == value
+    assert not any("view-only" in item.value for item in app.info)
+    assert not app.error
 
 
 def test_read_only_home_shows_only_configured_google_drive_url(tmp_path: Path) -> None:
@@ -187,15 +206,15 @@ def test_read_only_navigation_exposes_introductions_but_no_execution_controls(
         assert alternatives[1].title in [header.value for header in app.subheader]
 
 
-@pytest.mark.parametrize("settings", [{"mode": "invalid"}, {}, {"unexpected": "value"}])
-def test_invalid_cloud_mode_fails_closed(tmp_path: Path, settings: dict[str, str]) -> None:
+@pytest.mark.parametrize("settings", [{"mode": "invalid"}, {"mode": None}, "invalid"])
+def test_invalid_cloud_mode_reports_error_without_hiding_workspace(tmp_path: Path, settings: Any) -> None:
     app = _app(tmp_path, "Project")
     app.secrets["toolkit"] = settings
     app.run()
     _assert_clean(app)
-    assert any("view-only" in item.value for item in app.info)
-    assert not app.text_input
-    assert [button.label for button in app.button] == ["Home"]
+    assert any("Invalid [toolkit]" in item.value for item in app.error)
+    assert app.text_input(key="project_root_widget")
+    assert not any("view-only" in item.value for item in app.info)
 
 
 @pytest.mark.parametrize("modality", ["CycIF", "HS", "FLIM", "H&E", "Visium", "Integration"])

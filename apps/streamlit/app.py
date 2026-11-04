@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import os
+import shutil
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -702,7 +703,6 @@ def _initialize_state() -> None:
         path_key = f"modality_folder_{modality}"
         if path_key not in st.session_state:
             st.session_state[path_key] = ""
-        st.session_state[f"data_mode_{modality}"] = st.session_state.get(f"data_mode_{modality}", "example")
         st.session_state[f"data_layout_{modality}"] = st.session_state.get(f"data_layout_{modality}", "Single sample")
         st.session_state[f"modality_output_{modality}"] = str(
             st.session_state.get(f"modality_output_{modality}") or st.session_state["output_root"]
@@ -1119,36 +1119,49 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
     if not descriptors:
         st.info("No implemented workflow is currently available for this modality.")
         return
+    example = None
+    example_error = None
+    example_descriptor = None
     if read_only:
         mode = "own"
     else:
+        from spatial_omics_toolkit.application.examples import get_example
+
+        try:
+            example = get_example(modality)
+            example_descriptor = next(
+                (item for item in descriptors if item.workflow_id == example.workflow_id),
+                None,
+            )
+            if example_descriptor is None:
+                example_error = "The prepared example refers to a workflow that is not registered for this modality."
+        except Exception as exc:
+            example_error = str(exc)
+        default_mode = "own" if example_error is not None else "example"
         mode_key = f"data_mode_{modality}"
         mode_state_key = f"{mode_key}_state"
-        st.session_state.setdefault(mode_key, st.session_state.get(mode_state_key, "example"))
+        st.session_state.setdefault(mode_key, st.session_state.get(mode_state_key, default_mode))
         if st.session_state[mode_key] not in {"example", "own"}:
-            st.session_state[mode_key] = "example"
+            st.session_state[mode_key] = default_mode
         mode = st.radio(
             "Input mode", ["example", "own"], horizontal=True, key=mode_key,
             format_func=lambda value: "Included example" if value == "example" else "Use my own data",
             on_change=_persist_widget_state, args=(mode_key, mode_state_key),
         )
-    example = None
+        if example_error is not None:
+            message = (
+                f"Example unavailable: {example_error} "
+                "Ask the toolkit administrator to prepare the file-backed example catalog and register its workflow; "
+                "no placeholder data are used. Your own-data controls remain available."
+            )
+            if mode == "example":
+                st.error(message)
+                return
+            st.info(message)
     workflow_key = f"selected_workflow_{confirmation_key(modality)}"
     workflow_state_key = f"selected_workflow_state_{modality}"
     if mode == "example":
-        from spatial_omics_toolkit.application.examples import get_example
-        try:
-            example = get_example(modality)
-        except Exception as exc:
-            st.error(f"Example unavailable: {exc}. Ask the toolkit administrator to prepare the file-backed example catalog; no placeholder data are used.")
-            return
-        descriptor = next(
-            (item for item in descriptors if item.workflow_id == example.workflow_id),
-            None,
-        )
-        if descriptor is None:
-            st.error("The selected file-backed example refers to a workflow that is not registered for this modality. Ask the toolkit administrator to register that example workflow.")
-            return
+        descriptor = example_descriptor
     else:
         titles = [item.title for item in descriptors]
         if workflow_key not in st.session_state or st.session_state[workflow_key] not in titles:
@@ -1718,13 +1731,22 @@ def main() -> None:
         settings = st.secrets.get("toolkit")
     except FileNotFoundError:
         settings = None
-    # A full workspace is available only inside an allocated HPC job; every other host is view-only.
-    hpc_allocation = bool(os.environ.get("SLURM_JOB_ID"))
-    read_only = not hpc_allocation or (
-        settings is not None and (
-            not hasattr(settings, "get") or settings.get("mode") != "hpc"
+    read_only = False
+    if settings is not None:
+        if not hasattr(settings, "get"):
+            st.error("Invalid [toolkit] settings: expected a table. The full workspace remains available.")
+        else:
+            mode = settings.get("mode", "hpc")
+            if mode == "read_only":
+                read_only = True
+            elif mode != "hpc":
+                st.error('Invalid [toolkit] mode: expected "hpc" or "read_only". The full workspace remains available.')
+    if not read_only and shutil.which("sbatch") is None:
+        st.info(
+            "SLURM submission is unavailable: sbatch was not found on this server. "
+            "The interface is available, but workflow jobs require an authorized SLURM backend "
+            "and server-accessible input and output paths."
         )
-    )
     dataset_url = settings.get("datasets_url") if hasattr(settings, "get") else None
     if not read_only:
         _initialize_state()

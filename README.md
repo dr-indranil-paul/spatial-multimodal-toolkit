@@ -6,18 +6,11 @@ The app provides workflows for Cyclic immunofluorescence (CycIF), hyperspectral 
 
 ## Deployment modes
 
-The same app supports full HPC use and a read-only Streamlit Community Cloud view. Set this in the Community Cloud **App settings → Secrets**:
+The same full interface is available on Streamlit Community Cloud and on HPC, regardless of whether `SLURM_JOB_ID` is set. Home, Project, workflow setup, Run, Quality control, Results, and Files are all available by default; `[toolkit] mode = "hpc"` also selects the full interface. To deliberately restrict an instance to workflow introductions, set `[toolkit] mode = "read_only"` in its secrets. Invalid mode settings are reported and do not silently hide the workspace.
 
-```toml
-[toolkit]
-mode = "read_only"
-```
+The full interface does not make the Cloud server an HPC cluster. Workflow submission requires `sbatch` on the app server and an authorized, functioning SLURM backend; the app reports when `sbatch` is missing and submission errors are surfaced. Inputs and outputs must be accessible to that server and satisfy the approved-workspace restrictions. Lab HPC paths are not automatically accessible from Community Cloud, and Cloud resource and storage limits still apply. For analysis, use an authorized HPC deployment with the required data, tools, and storage.
 
-`datasets_url` is optional; when supplied, the viewer shows it as an external Google Drive link. The URL is intentionally supplied through deployment secrets, not committed to GitHub. Drive permissions remain separate: give collaborators access to the folder as needed. The app only links to these files; it does not copy or process them in Community Cloud. For analysis, download permitted datasets to the authorized HPC workspace and run the full app there.
-
-An app launched outside an SLURM allocation is view-only by default. The full workspace requires an allocated HPC job and, when toolkit settings are configured, `mode = "hpc"`. Community Cloud's free tier is reported here as limited to 1 GB of RAM; this viewer mode avoids dataset processing and job submission. Streamlit Community Cloud supports private apps and invited viewers, so the app and GitHub repository can remain private. See [app sharing and privacy](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app). Do not place identifiable or otherwise restricted study data in a personal Google account unless institutional policy approves it.
-
-Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the Community Cloud app private. Invite the collaborator as a Cloud viewer; give separate GitHub repository access only if they need to use or inspect the code. Setting `datasets_url` under `[toolkit]` in Cloud secrets adds a Google Drive link on Home when the sharing URL is available. The app does not mount Drive or persist downloaded files. Check that the Drive folder's access permissions allow only intended users.
+Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the Community Cloud app private. Invite the collaborator as a Cloud viewer; give separate GitHub repository access only if they need to use or inspect the code. An optional `datasets_url` under `[toolkit]` in Cloud **App settings → Secrets** adds an external Google Drive link on Home; the app does not mount Drive or automatically copy its files. Drive permissions remain separate: check that the folder is accessible only to intended users. See [app sharing and privacy](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app). Do not place identifiable or otherwise restricted study data in a personal Google account unless institutional policy approves it.
 
 ## Start here
 
@@ -29,7 +22,7 @@ A modality workspace opens on **Introduction**, which describes the selected wor
 - **Run** to check inputs, review requested decisions, and start or monitor work.
 - **Quality control**, **Results**, and **Files** to inspect the selected run's recorded review information and outputs.
 
-If an **Included example** is available, choose it in the input-mode selector and run it from **Data & settings** or **Run**; no project setup is needed. Examples demonstrate technical QC and are not analyses of your study cohort.
+If a prepared **Included example** is available for the modality, it is selected initially and can be run from **Data & settings** or **Run**; no project setup is needed. When the file-backed example catalog is unavailable (as it may be on Community Cloud), the workspace instead opens with **Use my own data**, shows a notice, and retains all workflow sections. An explicitly selected input mode is preserved. Ask the toolkit administrator to prepare the example catalog if needed; the app does not substitute placeholder data. Examples demonstrate technical QC and are not analyses of your study cohort.
 
 To use your own data, select **Use my own data** and follow **Data & settings**:
 

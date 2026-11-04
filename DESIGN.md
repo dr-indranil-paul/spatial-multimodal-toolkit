@@ -14,7 +14,9 @@ Streamlit UI
 
 ## Deployment modes
 
-One application supports a read-only Streamlit Community Cloud view configured with `[toolkit] mode = "read_only"` in secrets. Outside an SLURM allocation the app defaults to this view; it exposes workflow selection and introductions, but no project edits, file browsing, run controls, review actions, or artifact access. Inside an allocation the full HPC workspace is available; a configured `[toolkit] mode = "hpc"` selects it explicitly. The optional `[toolkit] datasets_url` adds an external Google Drive link only; the Cloud app does not mount, process, or persist datasets.
+One application exposes the full workspace by default, including on Streamlit Community Cloud and without `SLURM_JOB_ID`; `[toolkit] mode = "hpc"` also selects it. An operator can explicitly select `[toolkit] mode = "read_only"` to expose only workflow selection and introductions, without project edits, file browsing, run controls, review actions, or artifact access. Invalid toolkit settings are reported without silently hiding the full workspace. The optional `[toolkit] datasets_url` adds an external Google Drive link; it does not mount Drive.
+
+Interface availability is distinct from execution capability. The app reports when `sbatch` is absent, but scheduler availability and authorization are ultimately checked on submission; failures are surfaced, not replaced with local execution. Submission requires an authorized SLURM backend and server-accessible approved paths. HPC filesystem paths do not become available to Community Cloud merely by deploying the interface; Cloud resource and storage limits also apply.
 
 ## Main components
 

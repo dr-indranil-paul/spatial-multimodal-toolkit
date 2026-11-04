@@ -478,7 +478,7 @@ def render_home(
             unsafe_allow_html=True,
         )
         st.button("Open project", type="primary", on_click=navigate, args=("Project",), key="home_open_project")
-        if read_only and dataset_url:
+        if dataset_url:
             parsed_url = urlsplit(dataset_url)
             if parsed_url.scheme == "https" and parsed_url.hostname in {"drive.google.com", "docs.google.com"}:
                 st.markdown(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -65,3 +66,82 @@ def test_examples_default_without_overwriting_own_project_or_configuration(
     assert app.session_state[f"workflow_parameters_{workflow_id}"] == before
     assert app.session_state["active_run_dirs"][modality] == str(own_project / "prior-run")
     assert app.session_state["selected_run_dirs"][modality] == str(own_project / "prior-run")
+
+
+@pytest.mark.parametrize("modality", ["CycIF", "HS", "FLIM", "H&E", "Visium", "Integration"])
+def test_missing_catalog_defaults_to_own_data_and_keeps_workspace_accessible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, modality: str,
+) -> None:
+    monkeypatch.setenv("SPATIAL_TOOLKIT_EXAMPLES", str(tmp_path / "missing_examples"))
+    app = AppTest.from_file(str(APP), default_timeout=20)
+    app.session_state["spatial_page"] = modality
+    app.session_state["output_root"] = str(tmp_path / "outputs")
+    app.run()
+
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key=f"data_mode_{modality}").value == "own"
+    assert any("Example unavailable" in item.value and "own-data controls remain available" in item.value
+               for item in app.info)
+    for section in ("Introduction", "Setup", "Run", "Quality control", "Results", "Files"):
+        app.radio(key=f"workspace_section_{modality}").set_value(section).run()
+        assert not app.exception, [item.message for item in app.exception]
+        assert app.radio(key=f"workspace_section_{modality}").value == section
+        assert app.radio(key=f"data_mode_{modality}").value == "own"
+    assert app.session_state["active_run_dirs"] == {}
+    assert not (tmp_path / "outputs").exists()
+
+    app.radio(key=f"data_mode_{modality}").set_value("example").run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key=f"data_mode_{modality}").value == "example"
+    assert any("Example unavailable" in item.value for item in app.error)
+    app.radio(key=f"data_mode_{modality}").set_value("own").run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key=f"workspace_section_{modality}").value == "Files"
+
+
+def test_real_prepared_catalog_defaults_to_example_and_preserves_own_choice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "examples"
+    quickstart = root / "quickstart"
+    quickstart.mkdir(parents=True)
+    entry = {
+        "folder": "he", "example_id": "he.image_intake", "modality": "H&E",
+        "workflow_id": "he-image-intake", "title": "H&E example",
+        "summary": "Technical QC", "layout": "Single source", "parameters": {},
+        "input_help": "Native image", "expected_outputs": ["QC"], "limitations": ["Technical QC only"],
+    }
+    (quickstart / "catalog.json").write_text(
+        json.dumps({"examples": {"H&E": entry}}), encoding="utf-8",
+    )
+    monkeypatch.setenv("SPATIAL_TOOLKIT_EXAMPLES", str(root))
+    app = AppTest.from_file(str(APP), default_timeout=20)
+    app.session_state["spatial_page"] = "H&E"
+    app.run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key="data_mode_H&E").value == "example"
+    app.radio(key="data_mode_H&E").set_value("own").run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key="data_mode_H&E").value == "own"
+    (quickstart / "catalog.json").unlink()
+    app.run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key="data_mode_H&E").value == "own"
+    assert any("Example unavailable" in item.value for item in app.info)
+
+
+def test_catalog_without_modality_defaults_to_own_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "examples"
+    quickstart = root / "quickstart"
+    quickstart.mkdir(parents=True)
+    (quickstart / "catalog.json").write_text(json.dumps({"examples": {}}), encoding="utf-8")
+    monkeypatch.setenv("SPATIAL_TOOLKIT_EXAMPLES", str(root))
+    app = AppTest.from_file(str(APP), default_timeout=20)
+    app.session_state["spatial_page"] = "HS"
+    app.run()
+    assert not app.exception, [item.message for item in app.exception]
+    assert app.radio(key="data_mode_HS").value == "own"
+    assert app.radio(key="workspace_section_HS").value == "Introduction"
+    assert any("No prepared example for modality" in item.value for item in app.info)
