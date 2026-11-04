@@ -1,3 +1,6 @@
+# THIS TOOL IS CURRENTLY IN ACTIVE DEVELOPMENT AND IS NOT INTENDED FOR PRODUCTION USE.
+
+
 # Spatial Omics Toolkit
 
 A guided app for exploring spatial imaging and omics data. Work independently in each modality workspace, inspect quality control, and review that modality’s outputs. Integration is optional.
