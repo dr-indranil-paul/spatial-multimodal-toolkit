@@ -321,6 +321,11 @@ def apply_theme() -> None:
             cursor: pointer;
             transition: all 0.12s ease;
         }
+        [data-testid="stMain"] [class*="st-key-workspace_section_"]
+        label[data-baseweb="radio"] [data-testid="stMarkdownContainer"] p {
+            color: #1d4ed8;
+            font-weight: 700;
+        }
         [class*="st-key-workspace_section_"] label[data-baseweb="radio"]:hover {
             color: var(--wb-ink-900);
             background: rgba(255, 255, 255, 0.6);
@@ -658,6 +663,9 @@ def apply_theme() -> None:
             color: #ffffff;
             box-shadow: 0 1px 2px rgba(79, 70, 229, 0.25);
         }
+        div[data-testid="stButton"] button[kind="primary"]:not(:disabled) p {
+            color: #ffffff !important;
+        }
         div[data-testid="stButton"] button[kind="primary"]:hover {
             border-color: #3730a3;
             background: var(--wb-accent-hover);
@@ -666,12 +674,7 @@ def apply_theme() -> None:
 
         /* Stage Flow Diagram */
         .stage-flow { margin: 0.65rem 0; }
-        .stage-graph {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(min(100%, 15.5rem), 1fr));
-            gap: 0.6rem;
-        }
-        .stage-node, .stage-detail {
+        .stage-detail {
             min-width: 0;
             overflow-wrap: anywhere;
             padding: 0.75rem 0.85rem;
@@ -679,14 +682,13 @@ def apply_theme() -> None:
             border-radius: 0.55rem;
             background: #ffffff;
         }
-        [data-testid="stMain"] .stage-node h3,
         [data-testid="stMain"] .stage-detail h3 {
             margin: 0.25rem 0;
             padding: 0;
             color: var(--wb-ink-900);
             font-size: 0.92rem;
         }
-        .stage-node p, .stage-detail p {
+        .stage-detail p {
             margin: 0.3rem 0;
             color: var(--wb-ink-600);
             font-size: 0.84rem;
@@ -881,7 +883,8 @@ def render_stage_flow(descriptor: WorkflowDescriptor) -> None:
         st.caption("No analysis stages are declared for this workflow.")
         return
     stages = {stage.stage_id: stage for stage in descriptor.stages}
-    nodes = []
+    graph = _WORKFLOW_GRAPHS.get(descriptor.workflow_id, [])
+    nodes_by_stage: dict[str, list[str]] = {stage.stage_id: [] for stage in descriptor.stages}
     display_labels = {
         "Native reader call": "Read original image",
         "Inventory and bounded preview": "Inventory and size-limited preview",
@@ -920,22 +923,32 @@ def render_stage_flow(descriptor: WorkflowDescriptor) -> None:
         "explicit input": "selected input",
         "explicit input and channel": "selected input and channel",
     }
-    for label, stage_id, kind, inputs in _WORKFLOW_GRAPHS.get(descriptor.workflow_id, []):
-        stage = stages.get(stage_id)
+    for label, stage_id, kind, inputs in graph:
+        if stage_id not in stages:
+            # Inputs, gates, joins and stops have no descriptor stage of their own.
+            # Place them with the first downstream stage, or the upstream stage for
+            # terminal nodes. A partial descriptor still retains their guidance.
+            stage_id = next(
+                (target_stage for _, target_stage, _, target_inputs in graph
+                 if target_stage in stages and any(source == label for source, _ in target_inputs)),
+                None,
+            ) or next(
+                (source_stage for source_label, source_stage, _, _ in graph
+                 if source_stage in stages and any(source == source_label for source, _ in inputs)),
+                descriptor.stages[0].stage_id,
+            )
         display_label = display_labels.get(label, label)
         display_kind = "Selection required" if label == "HD native bin" else display_kinds.get(kind, kind)
-        reference = f"<p>Analysis step: {escape(stage.title)}</p>" if stage else ""
         edges = "".join(
-            f'<li data-source="{escape(source, quote=True)}" data-target="{escape(label, quote=True)}">'
-            f'{escape(display_labels.get(source, source))} <span class="stage-arrow" aria-hidden="true">→</span> '
+            f'<li>{escape(display_labels.get(source, source))} '
+            f'<span class="stage-arrow" aria-hidden="true">→</span> '
             f'{escape(display_label)} <small>({escape(display_conditions.get(condition, condition).replace("native bin", "bin size").replace("bounded images", "size-limited images"))})</small></li>'
             for source, condition in inputs
         )
-        nodes.append(
-            f'<article class="stage-node" data-node="{escape(label, quote=True)}">'
-            f'<span class="stage-kind">{escape(display_kind)}</span><h3>{escape(display_label)}</h3>{reference}'
+        nodes_by_stage[stage_id].append(
+            f'<p><strong>{escape(display_label)}</strong> '
+            f'<span class="stage-kind">{escape(display_kind)}</span></p>'
             + (f'<ul class="stage-inputs" aria-label="Inputs to {escape(display_label, quote=True)}">{edges}</ul>' if edges else "")
-            + "</article>"
         )
     details = []
     for index, stage in enumerate(descriptor.stages, 1):
@@ -948,11 +961,11 @@ def render_stage_flow(descriptor: WorkflowDescriptor) -> None:
         details.append(
             f'<article class="stage-detail"><span class="stage-number">Stage {index}</span>'
             f"<h3>{escape(stage.title)}</h3><p>{escape(stage.purpose)}</p>"
-            f'<div class="stage-tools"><strong>Tools for this step</strong><br>{tools}</div></article>'
+            + "".join(nodes_by_stage[stage.stage_id])
+            + f'<div class="stage-tools"><strong>Tools for this step</strong><br>{tools}</div></article>'
         )
     st.markdown(
         '<section class="stage-flow" aria-label="Workflow paths and declared stages">'
-        + ('<div class="stage-graph" aria-label="Workflow path inputs">' + "".join(nodes) + "</div>" if nodes else "")
         + '<div class="stage-details">' + "".join(details) + "</div></section>",
         unsafe_allow_html=True,
     )

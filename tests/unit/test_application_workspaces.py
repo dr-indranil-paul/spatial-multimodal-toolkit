@@ -128,7 +128,7 @@ def test_full_workspace_without_slurm_allocation(
     assert app.text_input(key="project_root_widget")
     _open_modality(app, "CycIF")
     section = app.radio(key="workspace_section_CycIF")
-    assert section.options == ["Data & settings", "Run", "Quality control", "Results", "Files", "Introduction"]
+    assert section.options == ["Introduction", "Data & settings", "Run", "Quality control", "Results", "Files"]
     for value in ("Setup", "Run", "Quality control", "Results", "Files", "Introduction"):
         app.radio(key="workspace_section_CycIF").set_value(value).run()
         _assert_clean(app)
@@ -287,11 +287,33 @@ class _GraphParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.edges: set[tuple[str, str]] = set()
+        self._in_item = False
+        self._text = ""
+        self.cards: list[str] = []
+        self._card: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attributes = dict(attrs)
-        if tag == "li" and "data-source" in attributes and "data-target" in attributes:
-            self.edges.add((attributes["data-source"], attributes["data-target"]))
+        if tag == "article":
+            self._card = []
+        if tag == "li":
+            self._in_item = True
+            self._text = ""
+
+    def handle_data(self, data: str) -> None:
+        if self._card is not None:
+            self._card.append(data)
+        if self._in_item:
+            self._text += data
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "article" and self._card is not None:
+            self.cards.append(" ".join(self._card))
+            self._card = None
+        if tag == "li" and self._in_item:
+            self._in_item = False
+            if "→" in self._text:
+                source, target = self._text.split("→", 1)
+                self.edges.add((source.strip(), target.split(" (", 1)[0].strip()))
 
 
 _EXPECTED_PATHS = {
@@ -378,7 +400,44 @@ def test_introduction_explains_conditional_workflow_paths(
     diagram = next(item.value for item in app.markdown if '<section class="stage-flow"' in item.value)
     graph = _GraphParser()
     graph.feed(diagram)
-    assert _EXPECTED_PATHS[workflow_id] <= graph.edges
+    labels = {
+        "Native reader call": "Read original image",
+        "Inventory and bounded preview": "Inventory and size-limited preview",
+        "HD native bin": "HD bin size",
+        "Native count QC": "Original count QC",
+        "Bounded preview": "Size-limited preview",
+        "Bounded previews": "Size-limited previews",
+        "Current cell frame": "Current cell table",
+        "Spatial null": "Spatial null model",
+        "Metadata audit": "Metadata review",
+        "Inventory and band audit": "Inventory and band review",
+        "Moment maps": "Spectral moment maps",
+        "Raw QC stop": "Stop after raw QC",
+        "Bundle intake": "Input bundle",
+        "Moving H&E CZI": "H&E CZI to align",
+        "Source and channel authorization": "Confirm sources and channel",
+        "Metadata and physical scale": "Check metadata and physical scale",
+        "Metrics and human review": "Alignment metrics and human review",
+    }
+    expected = {(labels.get(source, source), labels.get(target, target))
+                for source, target in _EXPECTED_PATHS[workflow_id]}
+    assert expected <= graph.edges
+    assert len(graph.cards) == len(selected.stages)
+    assert all(stage.title in card and stage.purpose in card
+               for stage, card in zip(selected.stages, graph.cards))
+    stage_guidance = {
+        "cycif.tabular_analysis": ("step09", ("Current cell table", "Program scoring")),
+        "hs.clinical-roi-hyperspectral": ("source_phasors", ("Specimen mapping", "TMA1 phasors", "TMA2 phasors")),
+        "hs.native_spectral_qc": ("hs_native_qc_plots", ("Intensity plots", "H1/H2 plots")),
+        "flim.raw_sdt": ("flim_raw_qc", ("Block review", "Stop after raw QC")),
+        "he-image-intake": ("image-intake", ("File selection", "SVS reader", "CZI reader", "TIFF reader")),
+        "visium-native-qc": ("bundle-intake", ("Classic Visium reader", "HD bin size", "HD reader")),
+        "integration.serial_section_alignment": ("serial-section-alignment", ("H&E CZI to align", "Alignment metrics and human review")),
+    }
+    if workflow_id in stage_guidance:
+        stage_id, guidance = stage_guidance[workflow_id]
+        card = next(card for stage, card in zip(selected.stages, graph.cards) if stage.stage_id == stage_id)
+        assert all(text in card for text in guidance)
     assert 'aria-hidden="true">→' in diagram
     for stage in selected.stages:
         assert escape(stage.title) in diagram and escape(stage.purpose) in diagram
@@ -395,7 +454,9 @@ def test_introduction_explains_conditional_workflow_paths(
         "flim.raw_sdt": {("Target phasors", "Reference inventory"), ("Reference QC", "Target phasors")},
         "he-image-intake": {("SVS reader", "CZI reader"), ("CZI reader", "TIFF reader")},
     }
-    assert not (forbidden.get(workflow_id, set()) & graph.edges)
+    forbidden_paths = {(labels.get(source, source), labels.get(target, target))
+                       for source, target in forbidden.get(workflow_id, set())}
+    assert not (forbidden_paths & graph.edges)
     if workflow_id in {"cycif-raw-czi", "cycif.tabular_analysis", "flim.raw_sdt"}:
         assert "Optional" in diagram
     if workflow_id in {"hs.clinical-roi-hyperspectral", "he-image-intake", "visium-native-qc"}:
@@ -406,18 +467,17 @@ def test_introduction_explains_conditional_workflow_paths(
         assert "Selection required" in diagram
     assert '>Gate<' not in diagram
     if workflow_id == "cycif.tabular_analysis":
-        assert 'data-node="Current cell frame"' in diagram
-        assert "<h3>Current cell table</h3>" in diagram
-        assert "<h3>Spatial null model</h3>" in diagram
+        assert "Current cell table" in diagram
+        assert "Spatial null model" in diagram
     if workflow_id == "hs.clinical-roi-hyperspectral":
-        assert "<h3>Metadata review</h3>" in diagram
+        assert "Metadata review" in diagram
         assert "(filtering or GMM)" in diagram
         assert "Gaussian mixture model (GMM)" in notes_block
     if workflow_id == "flim.raw_sdt":
-        assert "<h3>Stop after raw QC</h3>" in diagram
+        assert "Stop after raw QC" in diagram
         assert "(raw-QC mode)" in diagram
     if workflow_id == "integration.serial_section_alignment":
-        assert "<h3>H&amp;E CZI to align</h3>" in diagram
+        assert "H&amp;E CZI to align" in diagram
         assert "(initial checks passed)" in diagram
 
 
@@ -439,6 +499,42 @@ def test_stage_flow_escapes_descriptor_text(monkeypatch: pytest.MonkeyPatch) -> 
     for value in ("<title>", "<purpose>", "<tool>", '<v "1">', "<role>"):
         assert escape(value) in diagram
         assert value not in diagram
+
+
+def test_stage_flow_handles_missing_graph_nodes_and_empty_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    from spatial_omics_toolkit.application.ui import presentation
+    from spatial_omics_toolkit.application.workflows.registry import list_workflows
+
+    original = next(item for item in list_workflows() if item.workflow_id == "cycif-raw-czi")
+    stage = original.stages[0]
+    descriptor = original.model_copy(update={"workflow_id": "example", "stages": [stage]})
+    rendered: list[str] = []
+    captions: list[str] = []
+    monkeypatch.setattr(presentation.st, "markdown", lambda text, **kwargs: rendered.append(text))
+    monkeypatch.setattr(presentation.st, "caption", lambda text, **kwargs: captions.append(text))
+    monkeypatch.setitem(presentation._WORKFLOW_GRAPHS, "example", [
+        ("<input>", None, "Input", []),
+        ("<missing stage>", "missing", "Gate", [("<input>", "<condition>")]),
+    ])
+    presentation.render_stage_flow(descriptor)
+    diagram = next(item for item in rendered if '<section class="stage-flow"' in item)
+    graph = _GraphParser()
+    graph.feed(diagram)
+    assert len(graph.cards) == 1
+    assert all(value in graph.cards[0] for value in (stage.title, "<input>", "<missing stage>", "<condition>"))
+    assert "&lt;input&gt;" in diagram and "&lt;condition&gt;" in diagram
+    assert "Review required" in graph.cards[0]
+
+    rendered.clear()
+    presentation.render_stage_flow(descriptor.model_copy(update={"workflow_id": "unknown"}))
+    graph = _GraphParser()
+    graph.feed(next(item for item in rendered if '<section class="stage-flow"' in item))
+    assert len(graph.cards) == 1 and stage.title in graph.cards[0]
+
+    rendered.clear()
+    presentation.render_stage_flow(descriptor.model_copy(update={"stages": []}))
+    assert captions == ["No analysis stages are declared for this workflow."]
+    assert not any('<section class="stage-flow"' in item for item in rendered)
 
 
 def test_introduction_tracks_selected_workflow(tmp_path: Path) -> None:

@@ -1258,7 +1258,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
             st.session_state[section_key] = str(st.session_state.get(section_state_key, "Setup"))
         section = st.radio(
             "Workflow",
-            ["Setup", "Run", "Quality control", "Results", "Files", "Introduction"],
+            ["Introduction", "Setup", "Run", "Quality control", "Results", "Files"],
             horizontal=True,
             key=section_key,
             on_change=_persist_widget_state,
@@ -1353,7 +1353,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
         with col_ex_meta:
             with st.container(border=True, key=f"example_card_meta_{modality}"):
                 st.markdown('<div class="wb-pane-header"><p class="wb-pane-title">Workflow architecture & source methods</p></div>', unsafe_allow_html=True)
-                st.write("Switch to the **Introduction** tab at any time to inspect the full conditional stage diagram, or expand **Methods & source** below for exact implementation functions.")
+                st.write("Switch to the **Introduction** tab to review the analysis stages and their conditions, or expand **Methods & source** below for exact implementation functions.")
                 render_step_sources(descriptor.workflow_id, key_prefix=f"example_setup_{modality}")
         return
 
