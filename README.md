@@ -17,13 +17,14 @@ Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the C
 
 ## Start here
 
-Choose a workspace from the cards in the center of Home, including optional Integration. Use **Open project** to set up a study folder, sample sheet, and results location. Inside a workspace, use the top navigation to return **Home** or open **Project**.
+Use the left sidebar to open **Home**, **Project**, or a modality workbench. Home also provides direct modality cards. Use **Project** to set up a study folder, sample sheet, and results location with live sample-sheet validation beside the controls.
 
-A modality workspace opens on **Introduction**, which describes the selected workflow's purpose, detailed input and output bullets, shared own-data prerequisites, and limitations. Its stage-and-tool diagram is an overview of the declared workflow, not a record of a particular run: notes identify conditional pathways, so not every stage or tool necessarily applies to every input or configuration. Outputs depend on the selected stages and successful execution; passing input checks does not guarantee them. Expand **Methods & source** for implementation-level detail; it shows current source definitions, which may differ from those used by an earlier saved run. This page is informational: it does not check inputs, start a run, or change results. Use the remaining workspace tabs to continue:
+A modality workbench opens directly on **Data & settings** with a compact summary banner at the top showing the active workflow's title, typical input formats, and purpose. Use the horizontal section bar on the main page to switch views:
 
-- **Data & settings** to choose example or own-data inputs and configure the selected workflow.
-- **Run** to check inputs, review requested decisions, and start or monitor work.
+- **Data & settings** to choose example or own-data inputs and configure the selected workflow in a side-by-side split pane.
+- **Run** to check inputs, review requested decisions, and start or monitor work with a live execution monitor beside the preflight gate.
 - **Quality control**, **Results**, and **Files** to inspect the selected run's recorded review information and outputs.
+- **Introduction** to inspect the workflow's conditional stage-and-tool diagram, detailed input and output bullets, shared own-data prerequisites, limitations, and **Methods & source** implementation locations. Its stage-and-tool diagram is an overview of the declared workflow, not a record of a particular run: notes identify conditional pathways, so not every stage or tool necessarily applies to every input or configuration. Outputs depend on the selected stages and successful execution; passing input checks does not guarantee them. This view is informational: it does not check inputs, start a run, or change results.
 
 If a prepared **Included example** is available for the modality, it is selected initially and can be run from **Data & settings** or **Run**; no project setup is needed. When the file-backed example catalog is unavailable (as it may be on Community Cloud), the workspace instead opens with **Use my own data**, shows a notice, and retains all workflow sections. An explicitly selected input mode is preserved. Ask the toolkit administrator to prepare the example catalog if needed; the app does not substitute placeholder data. Examples demonstrate technical QC and are not analyses of your study cohort.
 

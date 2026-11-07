@@ -619,50 +619,55 @@ def _render_results(run_dir: Path) -> None:
     ))
     stages = sorted({record["stage_label"] for record in records})
     kinds = sorted({record["kind"] for record in records})
-    col_stage, col_kind, col_search = st.columns([1, 1, 2])
-    with col_stage:
-        stage_filter = st.selectbox("Stage", ["All stages", *stages], key=f"results_stage_{run_dir.resolve()}")
-    with col_kind:
-        kind_filter = st.selectbox("File type", ["All types", *kinds], key=f"results_kind_{run_dir.resolve()}")
-    with col_search:
-        query = st.text_input("Search results", key=f"results_search_{run_dir.resolve()}").strip().lower()
-    filtered = [record for record in records if (stage_filter == "All stages" or record["stage_label"] == stage_filter) and (kind_filter == "All types" or record["kind"] == kind_filter) and (not query or query in record["path"].name.lower() or query in record["stage_label"].lower())]
-    st.caption(f"{len(filtered)} of {len(records)} recorded files · grouped by their recorded stage and file type")
-    if not filtered:
-        st.info("No files match these filters.")
-        return
-    labels = [
-        f"{record['stage_label']} · {record['path'].name} · {record['kind']} · file {index + 1}"
-        for index, record in enumerate(filtered)
-    ]
-    choice = st.selectbox("Choose one file to preview", labels, key=f"results_artifact_{run_dir.resolve()}")
-    selected = filtered[labels.index(choice)]
-    _render_saved_sources(
-        run_dir, run_metadata, events, stage_id=str(selected["stage"]), section="results",
-    )
-    with st.container(border=True):
-        st.markdown(f"**{selected['path'].name}**")
-        st.caption(f"{selected['stage_label']} · {selected['kind']} · recorded in {' and '.join(sorted(selected['sources']))}")
-        show_artifact(str(selected["path"]), run_dir, selected["status"], key_prefix=f"results_{run_dir.resolve()}")
-    def source_matches(record: dict[str, Any]) -> bool:
-        source_text = str(record["metadata"].get("source_pdf", ""))
-        if not source_text:
-            return False
-        source_path = Path(source_text).expanduser()
-        if not source_path.is_absolute():
-            source_path = run_dir / source_path
-        try:
-            return source_path.resolve(strict=False) == selected["path"].resolve(strict=False)
-        except (OSError, RuntimeError):
-            return source_text == selected["path"].name
+    col_browser, col_preview = st.columns([1, 1.35], gap="medium")
+    with col_browser:
+        with st.container(border=True):
+            st.markdown('<div class="wb-pane-header"><p class="wb-pane-title">Result browser & filters</p></div>', unsafe_allow_html=True)
+            col_stage, col_kind = st.columns(2)
+            with col_stage:
+                stage_filter = st.selectbox("Stage", ["All stages", *stages], key=f"results_stage_{run_dir.resolve()}")
+            with col_kind:
+                kind_filter = st.selectbox("File type", ["All types", *kinds], key=f"results_kind_{run_dir.resolve()}")
+            query = st.text_input("Search results", key=f"results_search_{run_dir.resolve()}").strip().lower()
+            filtered = [record for record in records if (stage_filter == "All stages" or record["stage_label"] == stage_filter) and (kind_filter == "All types" or record["kind"] == kind_filter) and (not query or query in record["path"].name.lower() or query in record["stage_label"].lower())]
+            st.caption(f"{len(filtered)} of {len(records)} recorded files · grouped by their recorded stage and file type")
+            if not filtered:
+                st.info("No files match these filters.")
+                return
+            labels = [
+                f"{record['stage_label']} · {record['path'].name} · {record['kind']} · file {index + 1}"
+                for index, record in enumerate(filtered)
+            ]
+            choice = st.selectbox("Choose one file to preview", labels, key=f"results_artifact_{run_dir.resolve()}")
+            selected = filtered[labels.index(choice)]
+            _render_saved_sources(
+                run_dir, run_metadata, events, stage_id=str(selected["stage"]), section="results",
+            )
+    with col_preview:
+        with st.container(border=True):
+            st.markdown(f"**{selected['path'].name}**")
+            st.caption(f"{selected['stage_label']} · {selected['kind']} · recorded in {' and '.join(sorted(selected['sources']))}")
+            show_artifact(str(selected["path"]), run_dir, selected["status"], key_prefix=f"results_{run_dir.resolve()}")
 
-    linked_previews = [record for record in records if source_matches(record)]
-    if selected["path"].suffix.lower() == ".pdf" and linked_previews:
-        st.caption("Worker-generated bounded page previews")
-        page_labels = [f"Page {item['metadata'].get('page', '?')} · {item['path'].name}" for item in linked_previews]
-        page_label = st.selectbox("Preview a PDF page", page_labels, key=f"pdf_page_{run_dir.resolve()}_{selected['path']}")
-        preview = linked_previews[page_labels.index(page_label)]
-        show_artifact(str(preview["path"]), run_dir, "Worker-generated preview", key_prefix=f"pdf_{run_dir.resolve()}_{selected['path']}")
+            def source_matches(record: dict[str, Any]) -> bool:
+                source_text = str(record["metadata"].get("source_pdf", ""))
+                if not source_text:
+                    return False
+                source_path = Path(source_text).expanduser()
+                if not source_path.is_absolute():
+                    source_path = run_dir / source_path
+                try:
+                    return source_path.resolve(strict=False) == selected["path"].resolve(strict=False)
+                except (OSError, RuntimeError):
+                    return source_text == selected["path"].name
+
+            linked_previews = [record for record in records if source_matches(record)]
+            if selected["path"].suffix.lower() == ".pdf" and linked_previews:
+                st.caption("Worker-generated bounded page previews")
+                page_labels = [f"Page {item['metadata'].get('page', '?')} · {item['path'].name}" for item in linked_previews]
+                page_label = st.selectbox("Preview a PDF page", page_labels, key=f"pdf_page_{run_dir.resolve()}_{selected['path']}")
+                preview = linked_previews[page_labels.index(page_label)]
+                show_artifact(str(preview["path"]), run_dir, "Worker-generated preview", key_prefix=f"pdf_{run_dir.resolve()}_{selected['path']}")
 
 
 def _file_inventory(run_dir: Path) -> list[Path]:

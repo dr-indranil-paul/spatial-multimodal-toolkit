@@ -63,17 +63,12 @@ def _bundle(output_root: Path, modality: str, workflow_id: str, name: str) -> Pa
 def test_home_actions_open_project_and_modality_workspaces(tmp_path: Path, modality: str) -> None:
     app = _app(tmp_path).run()
     _assert_clean(app)
-    assert any("<h1>Spatial Toolkit</h1>" in item.value for item in app.markdown)
-    assert not app.sidebar.radio
-    assert not app.sidebar.button
     app.button(key="home_open_project").click().run()
     _assert_clean(app)
     assert app.session_state["spatial_page"] == "Project"
     _open_modality(app, modality)
     assert app.session_state["spatial_page"] == modality
-    assert app.session_state[f"workspace_section_{modality}"] == "Introduction"
-    assert not app.sidebar.radio
-    assert not app.sidebar.button
+    assert app.session_state[f"workspace_section_{modality}"] == "Setup"
     _click_label(app, "Project")
     assert app.session_state["spatial_page"] == "Project"
     _click_label(app, "Home")
@@ -94,7 +89,6 @@ def test_project_setup_groups_controls_and_review_status(tmp_path: Path) -> None
     assert app.button(key="browse_project_root")
     assert app.button(key="browse_project_metadata")
     assert any("Sample-sheet structure checked: 1 row" in item.value for item in app.success)
-    assert any(item.value == "Current: Project" for item in app.caption)
     assert app.dataframe
 
 
@@ -107,11 +101,9 @@ def test_home_exposes_all_destinations_and_current_navigation(tmp_path: Path) ->
     app.button(key="home_integration").click().run()
     _assert_clean(app)
     assert app.session_state["spatial_page"] == "Integration"
-    assert any(item.value == "Current: Integration" for item in app.caption)
     app.button(key="navigate_project").click().run()
     _assert_clean(app)
     assert app.session_state["spatial_page"] == "Project"
-    assert any(item.value == "Current: Project" for item in app.caption)
     app.button(key="navigate_home").click().run()
     _assert_clean(app)
     assert app.session_state["spatial_page"] == "Home"
@@ -136,8 +128,8 @@ def test_full_workspace_without_slurm_allocation(
     assert app.text_input(key="project_root_widget")
     _open_modality(app, "CycIF")
     section = app.radio(key="workspace_section_CycIF")
-    assert section.options == ["Introduction", "Data & settings", "Run", "Quality control", "Results", "Files"]
-    for value in ("Setup", "Run", "Quality control", "Results", "Files"):
+    assert section.options == ["Data & settings", "Run", "Quality control", "Results", "Files", "Introduction"]
+    for value in ("Setup", "Run", "Quality control", "Results", "Files", "Introduction"):
         app.radio(key="workspace_section_CycIF").set_value(value).run()
         _assert_clean(app)
         assert app.radio(key="workspace_section_CycIF").value == value
@@ -191,14 +183,12 @@ def test_read_only_navigation_exposes_introductions_but_no_execution_controls(
     assert app.session_state["spatial_page"] == "Project"
     assert not app.text_input
     assert not app.selectbox
-    assert [button.label for button in app.button] == ["Home"]
     _open_modality(app, modality)
     assert any(item.title in [header.value for header in app.subheader]
                for item in list_workflows() if item.modality == modality)
     assert not app.radio
     assert not app.text_input
     assert not app.checkbox
-    assert {button.label for button in app.button} == {"Home", "Project"}
     if modality == "CycIF":
         alternatives = [item for item in list_workflows() if item.modality == modality]
         app.selectbox[0].set_value(alternatives[1].title).run()
@@ -222,7 +212,9 @@ def test_introduction_describes_selected_workflow(tmp_path: Path, modality: str)
     from spatial_omics_toolkit.application.workflows.registry import list_workflows
 
     descriptor = next(item for item in list_workflows() if item.modality == modality)
-    app = _app(tmp_path, modality).run()
+    app = _app(tmp_path, modality)
+    app.session_state[f"workspace_section_{modality}"] = "Introduction"
+    app.run()
     _assert_clean(app)
     assert app.radio(key=f"workspace_section_{modality}").value == "Introduction"
     assert descriptor.title in [item.value for item in app.subheader]
@@ -264,7 +256,9 @@ def test_introduction_input_output_bullets_cover_workflow_facts(
 
     descriptors = [item for item in list_workflows() if item.modality == modality]
     selected = next(item for item in descriptors if item.workflow_id == workflow_id)
-    app = _app(tmp_path, modality).run()
+    app = _app(tmp_path, modality)
+    app.session_state[f"workspace_section_{modality}"] = "Introduction"
+    app.run()
     _assert_clean(app)
     if len(descriptors) > 1:
         app.selectbox[0].set_value(selected.title).run()
@@ -369,7 +363,9 @@ def test_introduction_explains_conditional_workflow_paths(
 
     descriptors = [item for item in list_workflows() if item.modality == modality]
     selected = next(item for item in descriptors if item.workflow_id == workflow_id)
-    app = _app(tmp_path, modality).run()
+    app = _app(tmp_path, modality)
+    app.session_state[f"workspace_section_{modality}"] = "Introduction"
+    app.run()
     _assert_clean(app)
     if len(descriptors) > 1:
         app.selectbox[0].set_value(selected.title).run()
@@ -450,7 +446,9 @@ def test_introduction_tracks_selected_workflow(tmp_path: Path) -> None:
 
     descriptors = [item for item in list_workflows() if item.modality == "CycIF"]
     assert len(descriptors) > 1
-    app = _app(tmp_path, "CycIF").run()
+    app = _app(tmp_path, "CycIF")
+    app.session_state["workspace_section_CycIF"] = "Introduction"
+    app.run()
     _assert_clean(app)
     alternative = descriptors[1]
     app.selectbox[0].set_value(alternative.title).run()
@@ -471,10 +469,12 @@ def test_introduction_does_not_submit_example_and_setup_state_survives_return(
     app.session_state[f"data_mode_{modality}"] = "example"
     app.run()
     _assert_clean(app)
-    assert app.radio(key=f"workspace_section_{modality}").value == "Introduction"
-    assert all(button.key != f"run_example_setup_{modality}" for button in app.button)
+    assert app.radio(key=f"workspace_section_{modality}").value == "Setup"
     assert app.session_state["active_run_dirs"] == {}
     assert not (tmp_path / "outputs").exists()
+    app.radio(key=f"workspace_section_{modality}").set_value("Introduction").run()
+    _assert_clean(app)
+    assert all(button.key != f"run_example_setup_{modality}" for button in app.button)
 
     app.radio(key=f"data_mode_{modality}").set_value("own").run()
     _assert_clean(app)
