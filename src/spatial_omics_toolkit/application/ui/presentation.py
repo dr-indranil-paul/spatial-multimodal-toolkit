@@ -15,7 +15,7 @@ MODALITY_LABELS: dict[str, str] = {
     "FLIM": "Fluorescence lifetime imaging microscopy (FLIM)",
     "H&E": "Hematoxylin and eosin (H&E)",
     "Visium": "Visium spatial transcriptomics",
-    "Integration": "Integration",
+    "Integration": "Multimodal integration",
 }
 
 _MODALITY_FORMATS: dict[str, str] = {

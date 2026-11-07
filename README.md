@@ -17,7 +17,7 @@ Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the C
 
 ## Start here
 
-Use the left sidebar to open **Home**, **Project**, or a modality workbench. Home also provides direct modality cards. Use **Project** to set up a study folder, sample sheet, and results location with live sample-sheet validation beside the controls.
+Use the left sidebar to open **Home**, **Project**, or a modality workbench; **Multimodal integration** opens the integration workspace. Home also provides direct modality cards. Use **Project** to set up a study folder, sample sheet, and results location with live sample-sheet validation beside the controls.
 
 A modality workbench opens directly on **Data & settings** with a compact summary banner at the top showing the active workflow's title, typical input formats, and purpose. Use the horizontal section bar on the main page to switch views:
 
@@ -61,4 +61,4 @@ An acquisition group left `UNMAPPED` can be used for technical QC only. The app 
 | **FLIM** | Native `.sdt` measurement files | Review native blocks and acquisition information. Raw-count and decay QC is distinct from calibrated lifetime analysis. |
 | **H&E** | SVS, CZI, TIFF, or OME-TIFF images | Inspect image metadata and view bounded previews. Image intake does not perform cross-modality registration. |
 | **Visium** | A supported Space Ranger output bundle | Inspect the gene-expression and spatial data at a supported resolution. Spatial bins are not biological replicates. |
-| **Integration** | An explicit moving H&E image and fluorescence reference | Inspect an exploratory serial-section translation preview. Confirming candidate files does not confirm biological pairing or accept the alignment. |
+| **Multimodal integration** | An explicit moving H&E image and fluorescence reference | Inspect an exploratory serial-section translation preview. Confirming candidate files does not confirm biological pairing or accept the alignment. |
