@@ -59,6 +59,7 @@ def apply_theme() -> None:
             --wb-accent-border: #c7d2fe;
             --wb-font-sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             --wb-font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            --wb-control-size: 0.82rem;
         }
         [data-testid="stAppViewContainer"] {
             background: var(--wb-canvas);
@@ -147,15 +148,31 @@ def apply_theme() -> None:
             line-height: 1.42;
             color: var(--wb-ink-800);
         }
-        [data-testid="stMain"] [data-testid="stWidgetLabel"] p {
+        :is([data-testid="stMain"], [role="dialog"]) [data-testid="stWidgetLabel"] p {
             font-size: 0.8rem !important;
             font-weight: 600 !important;
             line-height: 1.35 !important;
             color: var(--wb-ink-800) !important;
         }
-        [data-testid="stMain"] [data-baseweb="input"] input,
-        [data-testid="stMain"] [data-baseweb="select"] {
-            font-size: 0.82rem !important;
+        :is([data-testid="stMain"], [role="dialog"]) [data-baseweb="input"] input,
+        :is([data-testid="stMain"], [role="dialog"]) [data-baseweb="textarea"] textarea,
+        :is([data-testid="stMain"], [role="dialog"]) [data-baseweb="select"],
+        :is([data-testid="stMain"], [role="dialog"]) [data-baseweb="select"] input,
+        [data-baseweb="popover"] [role="option"],
+        [data-testid="stSelectboxVirtualDropdownEmpty"] li {
+            font-size: var(--wb-control-size) !important;
+        }
+        /* Dropdown menus are portalled outside the main app content. */
+        [data-baseweb="popover"] [role="option"] {
+            line-height: 1.4;
+        }
+        [role="dialog"] [data-testid="stMarkdownContainer"] p {
+            font-size: 0.84rem;
+            line-height: 1.45;
+        }
+        [role="dialog"] [data-testid="stCaptionContainer"] p {
+            color: var(--wb-ink-500);
+            font-size: 0.78rem;
         }
         [data-testid="stMain"] [data-testid="stCaptionContainer"],
         [data-testid="stMain"] [data-testid="stCaptionContainer"] p {
