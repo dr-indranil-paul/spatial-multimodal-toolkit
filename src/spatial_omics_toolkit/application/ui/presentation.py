@@ -731,19 +731,23 @@ def _stage_graph(descriptor: WorkflowDescriptor) -> str:
                 raise ValueError(f"Unknown workflow stage dependency: {dependency}")
     tuple(TopologicalSorter(dependencies).static_order())
 
-    def label_lines(value: str, width: int) -> str:
+    def label_lines(value: str, width: int, prefix: str = "") -> str:
         lines = [line for paragraph in value.split("\n")
-                 for line in (wrap(paragraph, width=width, break_long_words=True,
+                 for line in (wrap(paragraph, width=width, break_long_words=False,
                                    break_on_hyphens=False) or [""])]
+        if prefix:
+            first = lines[0]
+            lines[0] = f"<B>{escape(prefix, quote=True)}</B>{escape(first[len(prefix):], quote=True)}"
+            return '<BR ALIGN="LEFT"/>'.join([lines[0], *(escape(line, quote=True) for line in lines[1:])])
         return '<BR ALIGN="LEFT"/>'.join(escape(line, quote=True) for line in lines)
 
-    def label(fields: list[tuple[bool, str]], width: int) -> str:
+    def label(fields: list[tuple[bool, str, str]], width: int) -> str:
         rows = []
-        for heading, value in fields:
+        for heading, prefix, value in fields:
             face = "Inter" if heading else "Source Sans"
             # Graphviz rounds HTML font sizes; reserve space before applying exact CSS sizes.
             size = "15" if heading else "14"
-            content = label_lines(value, width)
+            content = label_lines(f"{prefix} {value}" if prefix else value, width, prefix)
             if heading:
                 content = f"<B>{content}</B>"
             rows.append(
@@ -760,12 +764,12 @@ def _stage_graph(descriptor: WorkflowDescriptor) -> str:
     ]
     for index, stage in enumerate(stages):
         fields = [
-            (True, stage.title),
-            (False, f"Purpose: {stage.purpose}"),
-            *[(False, f"Tool: {tool.name} ({tool.version}) — {tool.role}") for tool in stage.tools],
-            (False, f"Inputs: {'; '.join(stage.inputs) or 'None declared'}"),
-            (False, f"Outputs: {'; '.join(stage.outputs) or 'None declared'}"),
-            (False, f"Condition / review: {stage.condition or 'None declared'}"),
+            (True, "", stage.title),
+            (False, "Purpose:", stage.purpose),
+            *[(False, "Tool:", f"{tool.name} ({tool.version}) — {tool.role}") for tool in stage.tools],
+            (False, "Inputs:", "; ".join(stage.inputs) or "None declared"),
+            (False, "Outputs:", "; ".join(stage.outputs) or "None declared"),
+            (False, "Condition / review:", stage.condition or "None declared"),
         ]
         dot.append(f'n{index} [id="stage-{index}", label={label(fields, 38)}];')
     for target, stage in enumerate(stages):
@@ -773,8 +777,8 @@ def _stage_graph(descriptor: WorkflowDescriptor) -> str:
             source = indexes[dependency]
             upstream = stages[source]
             fields = [
-                (False, f"Upstream outputs (when produced): {'; '.join(upstream.outputs) or 'None declared'}"),
-                (False, f"Downstream condition / review: {stage.condition or 'None declared'}"),
+                (False, "Upstream outputs (when produced):", "; ".join(upstream.outputs) or "None declared"),
+                (False, "Downstream condition / review:", stage.condition or "None declared"),
             ]
             dot.append(f'n{source} -> n{target} [id="edge-{source}-{target}", label={label(fields, 38)}];')
     dot.append("}")

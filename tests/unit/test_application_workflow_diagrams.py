@@ -126,6 +126,75 @@ def test_graph_escapes_dynamic_labels_and_does_not_interpolate_ids(monkeypatch: 
     assert details[0].count(escape(payload, quote=True)) == 8
 
 
+def test_svg_bolds_only_field_prefixes_and_preserves_wrapped_values() -> None:
+    descriptor = next(item for item in list_workflows() if item.stages and item.stages[0].tools)
+    stage = descriptor.stages[0]
+    payload = '<unsafe & "quoted">'
+    long_value = " ".join(["wrappedfield"] * 20) + " " + payload
+    identifier = "unbroken_identifier_" * 12
+    tool = stage.tools[0].model_copy(update={"name": identifier, "version": "1", "role": long_value})
+    upstream = stage.model_copy(update={
+        "stage_id": "upstream",
+        "title": "Upstream stage",
+        "purpose": long_value,
+        "tools": [tool],
+        "inputs": [payload],
+        "outputs": [long_value],
+        "condition": payload,
+        "depends_on": [],
+    })
+    downstream = stage.model_copy(update={
+        "stage_id": "downstream",
+        "title": "Downstream stage",
+        "purpose": payload,
+        "tools": [],
+        "inputs": [payload],
+        "outputs": [payload],
+        "condition": long_value,
+        "depends_on": ["upstream"],
+    })
+    markup, svg = _diagram(descriptor.model_copy(update={"stages": [upstream, downstream]}))
+    groups = {element.attrib.get("id"): element for element in svg.iter(f"{SVG}g")}
+    node = groups["stage-0"]
+    edge = groups["edge-0-1"]
+
+    def weighted_text(element: ET.Element, bold: bool) -> str:
+        return _compact("".join(
+            text.text or "" for text in element.iter(f"{SVG}text")
+            if (text.attrib.get("font-weight") in {"bold", "700"}) == bold
+        ))
+
+    node_bold = weighted_text(node, True)
+    node_normal = weighted_text(node, False)
+    edge_bold = weighted_text(edge, True)
+    edge_normal = weighted_text(edge, False)
+    for prefix in ("Purpose:", "Tool:", "Inputs:", "Outputs:", "Condition / review:"):
+        assert _compact(prefix) in node_bold
+        assert _compact(prefix) not in node_normal
+    for prefix in ("Upstream outputs (when produced):", "Downstream condition / review:"):
+        assert _compact(prefix) in edge_bold
+        assert _compact(prefix) not in edge_normal
+    assert _compact(long_value) in node_normal
+    assert _compact(long_value) in edge_normal
+    assert _compact(payload) in node_normal
+    assert _compact(payload) in edge_normal
+    assert _compact(payload) not in node_bold + edge_bold
+    assert _compact(long_value) not in node_bold + edge_bold
+    normal_lines = [text.text or "" for text in node.iter(f"{SVG}text")
+                    if text.attrib.get("font-weight") not in {"bold", "700"}]
+    assert any(identifier in line for line in normal_lines)
+    assert sum(line.count("wrappedfield") for line in normal_lines) == 60
+    assert all("wrapped" not in line.replace("wrappedfield", "") for line in normal_lines)
+    left, top, right, bottom = _node_bounds(node)
+    for text in node.iter(f"{SVG}text"):
+        assert left <= float(text.attrib["x"]) <= right
+        assert top <= float(text.attrib["y"]) <= bottom
+    assert payload not in markup
+    assert not list(svg.iter(f"{SVG}script"))
+    assert edge.find(f"{SVG}path") is not None
+    assert edge.find(f"{SVG}polygon") is not None
+
+
 def test_unknown_dependencies_and_duplicate_ids_are_not_silently_drawn() -> None:
     descriptor = next(item for item in list_workflows() if item.stages)
     stage = descriptor.stages[0]
