@@ -10,6 +10,7 @@ import pytest
 
 from spatial_omics_toolkit.application.contracts import PreflightResult, RunRequest
 from spatial_omics_toolkit.application.workflows import visium as visium_workflow
+from tests.stage_runner import run_stages
 
 from spatial_omics_toolkit.application.workflows.visium import (
     _available_hd_bin_sizes,
@@ -197,7 +198,7 @@ def test_visium_hd_execution_without_lowres_image_keeps_optional_preview_absent(
     monkeypatch.setitem(sys.modules, "spatialdata_io", reader_module)
     events = []
 
-    result = visium_workflow.execute(request, events.append)
+    result = run_stages(visium_workflow, request, events.append)
 
     assert result.status != "FAILED"
     assert any(event.stage_id == "bundle-intake" and event.status == "SUCCEEDED" for event in events)
@@ -205,3 +206,65 @@ def test_visium_hd_execution_without_lowres_image_keeps_optional_preview_absent(
     receipt_path = next(Path(path) for path in result.artifacts if Path(path).name == "bundle_receipt.json")
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt["tissue_lowres_preview"] is None
+    assert any(event.stage_id == "spatial-preview" and event.status == "SKIPPED" for event in events)
+
+
+def test_visium_stage_dependencies_block_downstream(tmp_path: Path) -> None:
+    from spatial_omics_toolkit.application.contracts import WorkflowResult
+
+    request = RunRequest(
+        workflow_id="visium-native-qc",
+        modality="Visium",
+        project_root=tmp_path,
+        modality_dir=tmp_path,
+        annotation_csv=tmp_path / "project_samples.csv",
+        output_root=tmp_path,
+        run_id=uuid4(),
+        run_dir=tmp_path / "run",
+    )
+    events = []
+    result = visium_workflow.execute_stage(
+        request, "count-qc", {"bundle-intake": WorkflowResult(status="QC_PENDING")}, events.append
+    )
+    assert result.status == "QC_PENDING"
+    assert not request.run_dir.exists()
+    assert events[0].stage_id == "count-qc"
+
+
+def test_visium_spatial_preview_uses_saved_qc_and_bounds_points(tmp_path: Path) -> None:
+    from spatial_omics_toolkit.application.contracts import WorkflowResult
+
+    request = RunRequest(
+        workflow_id="visium-native-qc",
+        modality="Visium",
+        project_root=tmp_path,
+        modality_dir=tmp_path,
+        annotation_csv=tmp_path / "project_samples.csv",
+        output_root=tmp_path,
+        run_id=uuid4(),
+        run_dir=tmp_path / "run",
+        parameters={"preview_max_points": 1000},
+    )
+    request.run_dir.mkdir()
+    qc = request.run_dir / "spot_bin_qc.csv"
+    qc.write_text(
+        "native_barcode,total_counts_measured,features_detected_measured,spatial_x_native,spatial_y_native\n"
+        + "".join(f"b{i},{i},1,{i},{i}\n" for i in range(1200)),
+        encoding="utf-8",
+    )
+    receipt = request.run_dir / "count_qc_receipt.json"
+    receipt.write_text(json.dumps({
+        "coordinate_columns": ["spatial_x_native", "spatial_y_native"],
+        "coordinate_table": str(qc), "native_observations": 1200, "display_assets": [],
+    }), encoding="utf-8")
+    events = []
+    result = visium_workflow.execute_stage(
+        request, "spatial-preview",
+        {"count-qc": WorkflowResult(status="SUCCEEDED", artifacts=[str(qc), str(receipt)])},
+        events.append,
+    )
+    assert result.status == "SUCCEEDED"
+    preview = json.loads((request.run_dir / "bundle_receipt.json").read_text(encoding="utf-8"))["display_assets"][0]
+    assert preview["observations_total"] == 1200
+    assert preview["observations_plotted"] == 1000
+    assert any(Path(path).name == "measured_counts_spatial_preview.png" for path in result.artifacts)

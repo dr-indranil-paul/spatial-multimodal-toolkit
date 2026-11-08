@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import csv
+import json
 import importlib.metadata
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from spatial_omics_toolkit.application.contracts import (
     FunctionReference,
@@ -14,6 +15,7 @@ from spatial_omics_toolkit.application.contracts import (
     RunRequest,
     StageDefinition,
     StageEvent,
+    StageStatus,
     ToolReference,
     WorkflowDescriptor,
     WorkflowEmitter,
@@ -36,9 +38,9 @@ def describe() -> WorkflowDescriptor:
         title="Clinical ROI hyperspectral metadata and phasor analysis",
         description="Run the existing clinical hyperspectral analysis using the reviewed final manifest and supporting records. TMA1 and TMA2 are analyzed separately.",
         stages=[
-            StageDefinition(stage_id="metadata_audit", title="Check metadata", purpose="Validate reviewed hyperspectral assignments and check acquisition metadata and exact spectral bands.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="load_final_analysis_manifest", role="Load the reviewed source manifest"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="audit_spectral_channel_maps", role="Check exact spectral bands")]),
-            StageDefinition(stage_id="source_phasors", title="Analyze spectral phasors", purpose="Compute first-harmonic summaries for each TMA separately, using the exact spectral-band map and an integrity-checked cache.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_spectral_phasors", role="Compute phasors separately for each TMA")]),
-            StageDefinition(stage_id="exploratory", title="Explore sensitivity", purpose="Optionally assess sensitivity to filtering or Gaussian mixture model (GMM) settings separately for each TMA; cluster IDs are not tissue classes.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_filter_sensitivity", role="Assess filter sensitivity"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_gmm_sensitivity", role="Assess GMM sensitivity")]),
+            StageDefinition(stage_id="metadata_audit", title="Metadata audit and specimen mapping", purpose="Validate the reviewed handoff, audit exact bands, and gate analysis on confirmed specimen mappings.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="load_final_analysis_manifest", role="Validate the reviewed source manifest"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="audit_spectral_channel_maps", role="Audit exact spectral bands")], depends_on=[], condition="Always; incomplete or unconfirmed specimen mapping permits metadata QC only.", inputs=["Reviewed final manifest and supporting records", "Confirmed acquisition-to-specimen mapping"], outputs=["Metadata audit", "Exact spectral channel map", "Mapping gate"]),
+            StageDefinition(stage_id="tma1_analysis", title="TMA1 phasors and optional sensitivity", purpose="Analyze TMA1 separately; optionally run the selected filter or GMM sensitivity using the source-bound in-memory phasor results.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_spectral_phasors", role="Compute TMA1 phasors"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_filter_sensitivity", role="Optional filter sensitivity"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_gmm_sensitivity", role="Optional GMM sensitivity")], depends_on=["metadata_audit"], condition="Complete confirmed specimen mapping; filter and GMM are alternatives.", inputs=["Reviewed final manifest", "Exact spectral channel map", "Mapping gate"], outputs=["TMA1 phasor summary, figures and receipt", "Optional TMA1 sensitivity outputs"]),
+            StageDefinition(stage_id="tma2_analysis", title="TMA2 phasors and optional sensitivity", purpose="Analyze TMA2 separately; optionally run the selected filter or GMM sensitivity using the source-bound in-memory phasor results.", tools=[source_tool], implementations=[FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_spectral_phasors", role="Compute TMA2 phasors"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_filter_sensitivity", role="Optional filter sensitivity"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="analyze_tma_phasor_gmm_sensitivity", role="Optional GMM sensitivity")], depends_on=["metadata_audit"], condition="Complete confirmed specimen mapping; filter and GMM are alternatives.", inputs=["Reviewed final manifest", "Exact spectral channel map", "Mapping gate"], outputs=["TMA2 phasor summary, figures and receipt", "Optional TMA2 sensitivity outputs"]),
         ],
         input_description=(
             "- A project containing the canonical `clinical_roi_hyperspectral.py` at its expected source path, or directly in the modality folder.\n"
@@ -57,36 +59,36 @@ def describe() -> WorkflowDescriptor:
             ParameterField(
                 name="max_working_bytes", label="Maximum working memory per channel",
                 kind="int", default=536870912, min_value=1, unit="bytes",
-                section="Phasor analysis", stage_id="source_phasors", advanced=True,
+                section="Phasor analysis", stage_id="tma1_analysis", advanced=True,
                 help_text="Positive per-channel working-memory limit used by the canonical reader.",
             ),
             ParameterField(
                 name="num_threads", label="Threads", kind="int", default=1,
-                min_value=1, section="Phasor analysis", stage_id="source_phasors",
+                min_value=1, section="Phasor analysis", stage_id="tma1_analysis",
                 advanced=True, help_text="Thread limit passed to the canonical source analysis.",
             ),
             ParameterField(
                 name="exploratory_diagnostic", label="Exploratory diagnostic",
                 kind="select", default="none", choices=["none", "filter", "gmm"],
-                section="Exploratory diagnostics", stage_id="exploratory",
+                section="Exploratory diagnostics", stage_id="tma1_analysis",
                 help_text="Optionally assess filter or GMM sensitivity for each TMA; clusters are not tissue classes.",
             ),
             ParameterField(
                 name="cluster_counts", label="GMM cluster counts", kind="multiselect",
                 default=[2, 3, 4, 6, 8, 12, 16], choices=[2, 3, 4, 6, 8, 12, 16],
-                section="Exploratory diagnostics", stage_id="exploratory", advanced=True,
+                section="Exploratory diagnostics", stage_id="tma1_analysis", advanced=True,
                 help_text="Prespecified component counts used only when GMM is selected.",
             ),
             ParameterField(
                 name="max_samples", label="Maximum phasor samples per acquisition",
                 kind="int", default=50000, min_value=1, max_value=50000,
-                section="Exploratory diagnostics", stage_id="exploratory", advanced=True,
+                section="Exploratory diagnostics", stage_id="tma1_analysis", advanced=True,
                 help_text="Maximum number of systematically selected raw G/S phasor samples per acquisition for GMM diagnostics.",
             ),
             ParameterField(
                 name="random_state", label="GMM random state", kind="int", default=0,
                 min_value=0, max_value=4294967295,
-                section="Exploratory diagnostics", stage_id="exploratory", advanced=True,
+                section="Exploratory diagnostics", stage_id="tma1_analysis", advanced=True,
                 help_text="Deterministic initialization seed passed to the canonical source API.",
             ),
         ],
@@ -177,139 +179,137 @@ def preflight(request: RunRequest) -> PreflightResult:
     return PreflightResult(ready=not blockers, blockers=blockers, resolved_parameters=resolved)
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    check = preflight(request)
-    if not check.ready:
-        event = StageEvent(stage_id="preflight", status="BLOCKED", message="; ".join(check.blockers), parameters=check.resolved_parameters)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event])
-    script, paths = _paths(request)
-    try:
-        source = _load_source(script)
-    except Exception as exc:
-        blocker = f"Canonical HS source module cannot be safely imported in the worker: {type(exc).__name__}: {exc}"
-        event = StageEvent(stage_id="preflight", status="BLOCKED", message=blocker, parameters=check.resolved_parameters)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event])
-
-
-    out = request.run_dir / "hs"
-    tables, plots = out / "tables", out / "plots"
-    tables.mkdir(parents=True, exist_ok=True)
-    plots.mkdir(parents=True, exist_ok=True)
-    cache = source.HSCache(
-        out / "cache", manifest_path=paths["assignment_manifest"],
-        queue_path=paths["queue"], force=bool(request.parameters.get("force", False)),
-    )
-    stages: list[StageEvent] = []
-    artifacts: list[str] = []
+def execute_stage(
+    request: RunRequest, stage_id: str, upstream: dict[str, WorkflowResult],
+    emit: WorkflowEmitter,
+) -> WorkflowResult:
+    if stage_id not in {"metadata_audit", "tma1_analysis", "tma2_analysis"}:
+        raise ValueError(f"Unknown hyperspectral stage: {stage_id}")
     warnings = [
         "Exploratory outputs are spectral diagnostics, not tissue classes.",
         "TMA runs are independent; cross-TMA raw-intensity comparison is prohibited.",
     ]
+    artifacts: list[str] = []
 
-    def publish(stage_id: str, status: str, message: str, params: dict[str, Any], files: list[Path]) -> None:
-        event = StageEvent(
-            stage_id=stage_id, status=status, message=message,
-            tool_versions={
-                "clinical_roi_hyperspectral.py": source._full_file_hash(script),
-                "phasorpy": _package_version("phasorpy"),
-            },
-            parameters=params,
-            artifacts=[str(path) for path in files],
-        )
-        stages.append(event)
+    def finish(status: StageStatus, message: str, *, parameters: dict[str, Any] | None = None,
+               state: dict[str, Any] | None = None, versions: dict[str, str] | None = None) -> WorkflowResult:
+        event = StageEvent(stage_id=stage_id, status=status, message=message,
+                           parameters=parameters or {}, artifacts=artifacts,
+                           tool_versions=versions or {})
         emit(event)
+        return WorkflowResult(status=status, stages=[event], artifacts=artifacts,
+                              warnings=warnings, state=state or {})
 
+    if stage_id != "metadata_audit":
+        previous = upstream.get("metadata_audit")
+        if previous is None:
+            return finish("BLOCKED", "Metadata audit receipt is required.")
+        if previous.status in {"FAILED", "BLOCKED", "QC_PENDING"}:
+            return finish(cast(StageStatus, previous.status), "Metadata audit did not authorize downstream analysis.")
+        if not previous.state.get("mapping_complete", False):
+            return finish("SKIPPED", "Incomplete or unconfirmed specimen mapping permits metadata QC only.")
+
+    check = preflight(request)
+    if not check.ready:
+        return finish("BLOCKED", "; ".join(check.blockers), parameters=check.resolved_parameters)
+    script, paths = _paths(request)
     try:
+        source = _load_source(script)
+    except Exception as exc:
+        return finish("BLOCKED", f"Canonical HS source module cannot be safely imported in the worker: {type(exc).__name__}: {exc}", parameters=check.resolved_parameters)
+
+    versions = {"clinical_roi_hyperspectral.py": source._full_file_hash(script),
+                "phasorpy": _package_version("phasorpy")}
+    try:
+        out = request.run_dir / "hs"
+        tables, plots = out / "tables", out / "plots"
+        tables.mkdir(parents=True, exist_ok=True)
+        plots.mkdir(parents=True, exist_ok=True)
+        cache = source.HSCache(
+            out / "cache" / stage_id, manifest_path=paths["final_manifest"],
+            queue_path=paths["queue"], force=bool(request.parameters.get("force", False)),
+        )
         final = source.load_final_analysis_manifest(
             paths["final_manifest"], ledger_path=paths["ledger"],
             assignment_manifest_path=paths["assignment_manifest"],
             queue_path=paths["queue"], settings_manifest_path=paths["settings_manifest"],
         )
-        metadata, channels = source.audit_spectral_channel_maps(final, cache=cache)
-        metadata_path, channel_path = tables / "hs_metadata_audit.csv", tables / "hs_exact_channel_map.csv"
-        metadata.to_csv(metadata_path, index=False)
-        channels.to_csv(channel_path, index=False)
-        artifacts.extend((str(metadata_path), str(channel_path)))
-        publish("metadata_audit", "SUCCEEDED", "Strict human-reviewed manifest validated; native metadata and exact spectral bands audited.", {"final_manifest": str(paths["final_manifest"]), "manifest_sha256": cache.manifest_sha256, "queue_sha256": cache.queue_sha256}, [metadata_path, channel_path])
-        specimen_mapping = request.parameters.get("specimen_mapping", {})
-        mapping_confirmed = request.parameters.get("specimen_mapping_confirmed") is True
-        required_group_keys = [f"acquisition:{value}" for value in final["path"]]
-        complete_mapping = (
-            mapping_confirmed
-            and isinstance(specimen_mapping, dict)
-            and len(required_group_keys) == len(final["path"])
-            and all(
-                isinstance(specimen_mapping.get(key), str)
-                and specimen_mapping[key].strip()
-                and specimen_mapping[key].strip().upper() != "UNMAPPED"
-                for key in required_group_keys
+        if stage_id == "metadata_audit":
+            channels, metadata = source.audit_spectral_channel_maps(final, cache=cache)
+            metadata_path, channel_path = tables / "hs_metadata_audit.csv", tables / "hs_exact_channel_map.csv"
+            channel_data_path = tables / "hs_exact_channel_map.json"
+            metadata.to_csv(metadata_path, index=False)
+            channels.to_csv(channel_path, index=False)
+            channel_data_path.write_text(json.dumps(channels.to_dict("records")), encoding="utf-8")
+            artifacts.extend((str(metadata_path), str(channel_path), str(channel_data_path)))
+            specimen_mapping = request.parameters.get("specimen_mapping", {})
+            mapping_confirmed = request.parameters.get("specimen_mapping_confirmed") is True
+            required_group_keys = [f"acquisition:{value}" for value in final["path"]]
+            complete_mapping = (
+                mapping_confirmed and isinstance(specimen_mapping, dict)
+                and all(isinstance(specimen_mapping.get(key), str)
+                        and specimen_mapping[key].strip()
+                        and specimen_mapping[key].strip().upper() != "UNMAPPED"
+                        for key in required_group_keys)
             )
-        )
-        if not complete_mapping:
-            import json
-            event_path = tables / "hs_cache_events.json"
+            event_path = tables / "hs_metadata_cache_events.json"
             event_path.write_text(json.dumps(cache.events, indent=2, sort_keys=True), encoding="utf-8")
             artifacts.append(str(event_path))
-            warning = "Specimen mapping is absent, unconfirmed, incomplete, or UNMAPPED; only metadata/QC output is retained. Specimen-level phasor aggregation is blocked and no identity is inferred."
-            warnings.append(warning)
-            publish(
-                "specimen_mapping", "WARNING", warning,
-                {"required_group_keys": required_group_keys,
-                 "mapping_confirmed": mapping_confirmed,
-                 "mapped_group_keys": sorted(specimen_mapping) if isinstance(specimen_mapping, dict) else []},
-                [],
-            )
-            return WorkflowResult(status="WARNING", stages=stages, artifacts=artifacts, warnings=warnings)
+            params = {"final_manifest": str(paths["final_manifest"]),
+                      "manifest_sha256": cache.manifest_sha256, "queue_sha256": cache.queue_sha256,
+                      "required_group_keys": required_group_keys, "mapping_confirmed": mapping_confirmed,
+                      "mapped_group_keys": sorted(specimen_mapping) if isinstance(specimen_mapping, dict) else []}
+            state = {"mapping_complete": complete_mapping, "channel_map": str(channel_data_path),
+                     "channel_map_sha256": source._hs_channel_map_sha256(channels)}
+            if not complete_mapping:
+                warning = "Specimen mapping is absent, unconfirmed, incomplete, or UNMAPPED; only metadata/QC output is retained. Specimen-level phasor aggregation is blocked and no identity is inferred."
+                warnings.append(warning)
+                return finish("WARNING", warning, parameters=params, state=state, versions=versions)
+            return finish("SUCCEEDED", "Strict human-reviewed manifest validated; native metadata and exact spectral bands audited.", parameters=params, state=state, versions=versions)
 
+        previous = upstream["metadata_audit"]
+        channels = source.pd.DataFrame(json.loads(Path(previous.state["channel_map"]).read_text(encoding="utf-8")))
+        if source._hs_channel_map_sha256(channels) != previous.state["channel_map_sha256"]:
+            raise ValueError("Exact spectral channel map changed after metadata audit")
+        tma = "TMA1" if stage_id == "tma1_analysis" else "TMA2"
         max_bytes = int(request.parameters.get("max_working_bytes", 512 * 1024**2))
         num_threads = int(request.parameters.get("num_threads", 1))
-        summaries: dict[str, Any] = {}
-        for tma in ("TMA1", "TMA2"):
-            summary, spectrum_pdf, phasor_pdf = source.analyze_tma_spectral_phasors(
-                final, channels, assigned_tma=tma, cache=cache, table_dir=tables,
-                plot_dir=plots, max_working_bytes=max_bytes, num_threads=num_threads,
-            )
-            summary_path = tables / f"{tma.lower()}_spectral_phasor_acquisitions.csv"
-            receipt_path = Path(summary.attrs["analysis_receipt_path"])
-            outputs = [summary_path, Path(spectrum_pdf), Path(phasor_pdf), receipt_path]
-            artifacts.extend(str(path) for path in outputs)
-            summaries[tma] = summary
-            publish("source_phasors", "SUCCEEDED", f"Completed canonical first-harmonic analysis for {tma} only.", {"assigned_tma": tma, "max_working_bytes": max_bytes, "num_threads": num_threads, "exact_band_map_sha256": source._hs_channel_map_sha256(channels), "raw_source_hashing": "full SHA-256 per selected CZI"}, outputs)
-
         diagnostic = request.parameters.get("exploratory_diagnostic")
-        if diagnostic == "none":
-            diagnostic = None
-        if diagnostic is not None:
-            if diagnostic not in {"filter", "gmm"}:
-                raise ValueError("exploratory_diagnostic must be 'filter', 'gmm', or omitted")
-            for tma in ("TMA1", "TMA2"):
-                if diagnostic == "filter":
-                    _, paths_out = source.analyze_tma_phasor_filter_sensitivity(
-                        summaries[tma], assigned_tma=tma, cache=cache, table_dir=tables, plot_dir=plots,
-                    )
-                else:
-                    _, paths_out = source.analyze_tma_phasor_gmm_sensitivity(
-                        summaries[tma], assigned_tma=tma, cache=cache, table_dir=tables, plot_dir=plots,
-                        cluster_counts=tuple(request.parameters.get("cluster_counts", (2, 3, 4, 6, 8, 12, 16))),
-                        max_samples=int(request.parameters.get("max_samples", 50000)),
-                        random_state=int(request.parameters.get("random_state", 0)),
-                    )
-                outputs = [Path(value) for value in paths_out]
-                artifacts.extend(str(path) for path in outputs)
-                publish("exploratory", "WARNING", f"{diagnostic} sensitivity completed separately for {tma}; results are exploratory only.", {"assigned_tma": tma, "diagnostic": diagnostic, "cluster_counts": request.parameters.get("cluster_counts"), "max_samples": request.parameters.get("max_samples", 50000)}, outputs)
-
-        import json
-        event_path = tables / "hs_cache_events.json"
+        if diagnostic not in (None, "none", "filter", "gmm"):
+            raise ValueError("exploratory_diagnostic must be 'filter', 'gmm', or omitted")
+        summary, spectrum_pdf, phasor_pdf = source.analyze_tma_spectral_phasors(
+            final, channels, assigned_tma=tma, cache=cache, table_dir=tables,
+            plot_dir=plots, max_working_bytes=max_bytes, num_threads=num_threads,
+        )
+        artifacts.extend(str(path) for path in (
+            tables / f"{tma.lower()}_spectral_phasor_acquisitions.csv",
+            spectrum_pdf, phasor_pdf, summary.attrs["analysis_receipt_path"],
+        ))
+        if diagnostic == "filter":
+            _, paths_out = source.analyze_tma_phasor_filter_sensitivity(
+                summary, assigned_tma=tma, cache=cache, table_dir=tables, plot_dir=plots,
+            )
+            artifacts.extend(str(path) for path in paths_out)
+        elif diagnostic == "gmm":
+            _, paths_out = source.analyze_tma_phasor_gmm_sensitivity(
+                summary, assigned_tma=tma, cache=cache, table_dir=tables, plot_dir=plots,
+                cluster_counts=tuple(request.parameters.get("cluster_counts", (2, 3, 4, 6, 8, 12, 16))),
+                max_samples=int(request.parameters.get("max_samples", 50000)),
+                random_state=int(request.parameters.get("random_state", 0)),
+            )
+            artifacts.extend(str(path) for path in paths_out)
+        event_path = tables / f"hs_{tma.lower()}_cache_events.json"
         event_path.write_text(json.dumps(cache.events, indent=2, sort_keys=True), encoding="utf-8")
         artifacts.append(str(event_path))
-        return WorkflowResult(status="SUCCEEDED", stages=stages, artifacts=artifacts, warnings=warnings)
+        params = {"assigned_tma": tma, "max_working_bytes": max_bytes, "num_threads": num_threads,
+                  "exact_band_map_sha256": source._hs_channel_map_sha256(channels),
+                  "raw_source_hashing": "full SHA-256 per selected CZI", "diagnostic": diagnostic}
+        message = f"Completed canonical first-harmonic analysis for {tma} only."
+        if diagnostic in {"filter", "gmm"}:
+            message += f" {diagnostic} sensitivity is exploratory only."
+        return finish("SUCCEEDED", message, parameters=params, versions=versions)
     except Exception as exc:
-        event = StageEvent(stage_id="hs_analysis", status="FAILED", message=f"{type(exc).__name__}: {exc}", tool_versions={"clinical_roi_hyperspectral.py": source._full_file_hash(script)}, parameters=request.parameters, artifacts=artifacts)
-        stages.append(event)
-        emit(event)
-        return WorkflowResult(status="FAILED", stages=stages, artifacts=artifacts, warnings=warnings)
+        return finish("FAILED", f"{type(exc).__name__}: {exc}", parameters=request.parameters, versions=versions)
 
 
 def _package_version(name: str) -> str:

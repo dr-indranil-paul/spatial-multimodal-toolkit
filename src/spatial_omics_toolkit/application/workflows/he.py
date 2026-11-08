@@ -57,6 +57,10 @@ def describe() -> WorkflowDescriptor:
                     "Record source files and metadata without modifying source images; "
                     "render reduced previews when supported."
                 ),
+                depends_on=[],
+                condition="Supported image files are present; format-specific readers inspect each file.",
+                inputs=["H&E source folder", "Preview size and CZI scale settings"],
+                outputs=["Image inventory JSON and CSV", "Optional bounded image previews"],
                 tools=[
                     ToolReference(
                         name="OpenSlide",
@@ -83,7 +87,7 @@ def describe() -> WorkflowDescriptor:
                     FunctionReference(source_file="spatial_omics_toolkit/application/workflows/he.py", function_name="_render_czi_preview", role="Dispatch CZI preview rendering"),
                     FunctionReference(source_file="external:image_previews.py", function_name="czi_rgb_preview", role="Create CZI RGB previews"),
                 ],
-                event_stage_ids=["workflow_output"],
+                event_stage_ids=["image-intake"],
             )
         ],
         input_description=(
@@ -310,7 +314,14 @@ def _inspect_image(path: Path, preview_path: Path, preview_size: int, czi_scale_
     return result
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
+def execute_stage(
+    request: RunRequest,
+    stage_id: str,
+    upstream: dict[str, WorkflowResult],
+    emit: WorkflowEmitter,
+) -> WorkflowResult:
+    if stage_id != "image-intake":
+        raise ValueError(f"Unknown H&E stage: {stage_id}")
     check = preflight(request)
     if not check.ready:
         event = StageEvent(
@@ -400,4 +411,10 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
         artifacts=artifacts,
     )
     emit(event)
-    return WorkflowResult(status=status, stages=[event], artifacts=artifacts, warnings=warnings)
+    return WorkflowResult(
+        status=status,
+        stages=[event],
+        artifacts=artifacts,
+        warnings=warnings,
+        state={"inventory_json": str(inventory_json), "inventory_csv": str(inventory_csv)},
+    )

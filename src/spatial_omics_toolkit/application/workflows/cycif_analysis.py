@@ -69,9 +69,14 @@ def _read_table(path: Path) -> pd.DataFrame:
     raise ValueError("Feature table must be CSV, TSV, or Parquet.")
 
 
-def _load_config(raw: Any, label: str) -> dict[str, Any]:
+def _project_path(raw: str | Path, project_root: Path) -> Path:
+    path = Path(raw).expanduser()
+    return (path if path.is_absolute() else project_root / path).resolve()
+
+
+def _load_config(raw: Any, label: str, project_root: Path) -> dict[str, Any]:
     if isinstance(raw, (str, Path)):
-        path = Path(raw).expanduser().resolve()
+        path = _project_path(raw, project_root)
         if not path.is_file():
             raise ValueError(f"{label} config file does not exist: {path}")
         with path.open(encoding="utf-8") as stream:
@@ -156,7 +161,7 @@ def _resolved(request: RunRequest) -> tuple[dict[str, Any], list[str], list[str]
     mapping = p.get("core_to_specimen")
     if isinstance(mapping, str):
         try:
-            with Path(mapping).expanduser().open(encoding="utf-8") as stream:
+            with _project_path(mapping, request.project_root).open(encoding="utf-8") as stream:
                 mapping = json.load(stream)
         except (OSError, json.JSONDecodeError) as exc:
             blockers.append(f"Unable to read core_to_specimen JSON mapping: {exc}")
@@ -240,7 +245,7 @@ def _resolved(request: RunRequest) -> tuple[dict[str, Any], list[str], list[str]
             blockers.append(f"{key} was enabled without its required explicit configuration.")
             continue
         try:
-            configs[key] = _load_config(raw, key)
+            configs[key] = _load_config(raw, key, request.project_root)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             blockers.append(str(exc))
     if "classification" in configs:
@@ -400,6 +405,10 @@ def describe() -> WorkflowDescriptor:
                 title=title,
                 purpose=purpose,
                 tools=tool,
+                depends_on=_STAGE_DEPENDENCIES[f"step{n:02d}"],
+                condition=f"Run when {_STAGE_CONFIGS[f'step{n:02d}']} is configured; otherwise pass through the cell table." + (" Requires matching spatial_features pair and k configuration." if n == 11 else ""),
+                inputs=(["Selected cell-feature table and specimen annotations"] if n == 6 else ["Current cell-feature table"]) + (["Biological-unit aggregate"] if n == 12 else []),
+                outputs={6: ["QC-corrected cell table", "Marker SNR"], 7: ["Classified cell table"], 8: ["Program-scored cell table"], 9: ["Core or biological-unit aggregate"], 10: ["Descriptive spatial features"], 11: ["Exploratory spatial-null results"], 12: ["Biological-unit group comparison"]}[n],
                 implementations=[FunctionReference(source_file=source_file, function_name=function_name, role="Run the optional configured analysis step")],
             )
             for n, title, purpose, source_file, function_name in [
@@ -458,59 +467,112 @@ def preflight(request: RunRequest) -> PreflightResult:
     return PreflightResult(ready=not blockers, blockers=blockers, warnings=warnings, resolved_parameters=params)
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    check = preflight(request)
-    if not check.ready:
-        out_root = request.run_dir / "cycif_analysis"
-        out_root.mkdir(parents=True, exist_ok=True)
-        event = StageEvent(stage_id="preflight", status="BLOCKED", message="; ".join(check.blockers), parameters=check.resolved_parameters)
-        (out_root / "resolved_parameters.json").write_text(json.dumps(check.resolved_parameters, indent=2, sort_keys=True), encoding="utf-8")
-        limitations = _limitations_for(check.resolved_parameters)
-        (out_root / "limitations.json").write_text(json.dumps(limitations, indent=2), encoding="utf-8")
-        (out_root / "stage_statuses.json").write_text(json.dumps([event.model_dump(mode="json")], indent=2), encoding="utf-8")
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], artifacts=[str(out_root / "resolved_parameters.json"), str(out_root / "limitations.json"), str(out_root / "stage_statuses.json")], warnings=check.warnings + check.blockers)
-    params = check.resolved_parameters
-    if "spatial_null" in params.get("enabled_stages", []):
-        params["spatial_null_confirmation_recorded_at_utc"] = datetime.now(timezone.utc).isoformat()
-    limitations = _limitations_for(params)
+_STAGE_CONFIGS = {
+    "step06": "qc", "step07": "classification", "step08": "programs",
+    "step09": "aggregate", "step10": "spatial_features",
+    "step11": "spatial_null", "step12": "compare_groups",
+}
+_STAGE_DEPENDENCIES = {
+    "step06": [], "step07": ["step06"], "step08": ["step07"],
+    "step09": ["step08"], "step10": ["step08"],
+    "step11": ["step08"], "step12": ["step08", "step09"],
+}
+
+
+def execute_stage(request: RunRequest, stage_id: str, upstream: dict[str, WorkflowResult], emit: WorkflowEmitter) -> WorkflowResult:
+    if stage_id not in _STAGE_CONFIGS:
+        raise ValueError(f"Unknown CyCIF analysis stage: {stage_id}")
     out_root = request.run_dir / "cycif_analysis"
     out_root.mkdir(parents=True, exist_ok=True)
-    (out_root / "resolved_parameters.json").write_text(json.dumps(params, indent=2, sort_keys=True), encoding="utf-8")
-    frame = _read_table(Path(params["feature_table_path"]))
+    stages: list[StageEvent] = []
+    artifacts: list[str] = []
+    warnings: list[str] = []
+    state: dict[str, Any] = {}
+
+    def finish(status: str, message: str, parameters: dict[str, Any] | None = None) -> WorkflowResult:
+        event = StageEvent(stage_id=stage_id, status=status, message=message, parameters=parameters or {}, artifacts=list(artifacts))
+        stages.append(event)
+        emit(event)
+        status_path = out_root / f"{stage_id}_status.json"
+        status_path.write_text(json.dumps(event.model_dump(mode="json"), indent=2), encoding="utf-8")
+        artifacts.append(str(status_path))
+        return WorkflowResult(status=status, stages=stages, artifacts=artifacts, warnings=warnings, state=state)
+
+    for dependency in _STAGE_DEPENDENCIES[stage_id]:
+        result = upstream.get(dependency)
+        if result is None or result.status not in {"SUCCEEDED", "WARNING", "REUSED", "SKIPPED"}:
+            return finish("BLOCKED", f"Required upstream stage {dependency} is missing or did not complete successfully.")
+    check = preflight(request)
+    warnings.extend(check.warnings)
+    if not check.ready:
+        warnings.extend(check.blockers)
+        if stage_id == "step06":
+            for name, value in (("resolved_parameters.json", check.resolved_parameters), ("limitations.json", _limitations_for(check.resolved_parameters))):
+                path = out_root / name
+                path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+                artifacts.append(str(path))
+        return finish("BLOCKED", "; ".join(check.blockers), check.resolved_parameters)
+    params = check.resolved_parameters
+    if "spatial_null" in params.get("enabled_stages", []) and stage_id == "step06":
+        params["spatial_null_confirmation_recorded_at_utc"] = datetime.now(timezone.utc).isoformat()
+        state["spatial_null_confirmation_recorded_at_utc"] = params["spatial_null_confirmation_recorded_at_utc"]
+    configs = params["stage_configs"]
     col = params["columns"]
     acquisition_col, core_col, x_col, y_col = (col[k] for k in ("acquisition_group", "core_id", "x", "y"))
-    resolved_core_to_specimen = params["resolved_core_to_specimen"]
-    frame["specimen_id"] = frame[core_col].astype(str).map(
-        {key: value["specimen_id"] for key, value in resolved_core_to_specimen.items()}
-    )
-    frame["biological_unit_id"] = frame[core_col].astype(str).map(
-        {key: value["biological_unit_id"] for key, value in resolved_core_to_specimen.items()}
-    )
-    frame["condition"] = frame[core_col].astype(str).map(
-        {key: value["condition"] for key, value in resolved_core_to_specimen.items()}
-    )
-    if frame[["specimen_id", "biological_unit_id", "condition"]].isna().any().any():
-        raise ValueError("Resolved core-to-specimen mapping failed to cover input rows.")
-    mapping = {"source_table": params["feature_table_path"], "acquisition_group_column": acquisition_col, "core_column": core_col, "mapping_confirmation": True, "project_samples_csv": params["annotation_csv"]}
-    # The explicit group field is preserved as source provenance; core mapping is never inferred from names.
-    (out_root / "input_mapping.json").write_text(json.dumps(mapping, indent=2), encoding="utf-8")
-    warnings = list(check.warnings) + ["step13_pseudobulk not run: continuous MCMICRO intensities are not raw counts.", "step10 spatial feature outputs are descriptive only."]
-    if "spatial_null" in params.get("enabled_stages", []):
+    warnings.extend(["step13_pseudobulk not run: continuous MCMICRO intensities are not raw counts.", "step10 spatial feature outputs are descriptive only."])
+    if "spatial_null" in configs:
         warnings.append("All step11 selected-pair p-values are retained as Exploratory because selection-adjusted full-pipeline correction is not implemented, regardless of pre-specification confirmation.")
-    stages: list[StageEvent] = []
-    artifacts = [str(out_root / "resolved_parameters.json"), str(out_root / "input_mapping.json")]
-    configs = params["stage_configs"]
-    # Reconstruct typed config objects after the JSON-safe preflight record was built.
-    
-    def record(stage_id: str, status: str, message: str, stage_dir: Path, parameters: dict[str, Any] | None = None) -> None:
+
+    def record(recorded_stage: str, status: str, message: str, stage_dir: Path, parameters: dict[str, Any] | None = None) -> None:
         files = sorted(str(p) for p in stage_dir.rglob("*") if p.is_file())
-        event = StageEvent(stage_id=stage_id, status=status, message=message, parameters=parameters or {}, artifacts=files, tool_versions={"spatial-omics-toolkit": params["toolkit_version"]})
+        event = StageEvent(stage_id=recorded_stage, status=status, message=message, parameters=parameters or {}, artifacts=files, tool_versions={"spatial-omics-toolkit": params["toolkit_version"]})
         stages.append(event)
         artifacts.extend(files)
         emit(event)
+
     try:
-        if "qc" in configs:
+        if stage_id == "step06":
+            for name, value in (("resolved_parameters.json", params), ("limitations.json", _limitations_for(params))):
+                path = out_root / name
+                path.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+                artifacts.append(str(path))
+            frame = _read_table(Path(params["feature_table_path"]))
+            resolved_map = params["resolved_core_to_specimen"]
+            for field in ("specimen_id", "biological_unit_id", "condition"):
+                frame[field] = frame[core_col].astype(str).map({key: value[field] for key, value in resolved_map.items()})
+            if frame[["specimen_id", "biological_unit_id", "condition"]].isna().any().any():
+                raise ValueError("Resolved core-to-specimen mapping failed to cover input rows.")
+            mapping = {"source_table": params["feature_table_path"], "acquisition_group_column": acquisition_col, "core_column": core_col, "mapping_confirmation": True, "project_samples_csv": params["annotation_csv"]}
+            mapping_path = out_root / "input_mapping.json"
+            mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+            artifacts.append(str(mapping_path))
+            mapped_path = out_root / "mapped_cell_features.csv"
+            frame.to_csv(mapped_path, index=False)
+            artifacts.append(str(mapped_path))
+            mapped_typed_path = out_root / "mapped_cell_features.parquet"
+            frame.to_parquet(mapped_typed_path, index=True)
+            artifacts.append(str(mapped_typed_path))
+            state["cell_table"] = str(mapped_typed_path)
+        else:
+            source_id = "step07" if stage_id == "step08" else "step06" if stage_id == "step07" else "step08"
+            source = upstream[source_id].state.get("cell_table")
+            if not isinstance(source, str):
+                raise ValueError(f"Upstream {source_id} did not provide a cell table receipt.")
+            source_state = upstream[source_id].state
+            frame = pd.read_parquet(source)
+            state["cell_table"] = source
+            if "spatial_null_confirmation_recorded_at_utc" in source_state:
+                state["spatial_null_confirmation_recorded_at_utc"] = source_state["spatial_null_confirmation_recorded_at_utc"]
+                params["spatial_null_confirmation_recorded_at_utc"] = source_state["spatial_null_confirmation_recorded_at_utc"]
+        if _STAGE_CONFIGS[stage_id] not in configs:
+            return finish("SKIPPED", f"{_STAGE_CONFIGS[stage_id]} was not configured; no numerical analysis was performed.")
+        aggregate_frame = None
+        if stage_id == "step12":
+            aggregate_path = upstream["step09"].state.get("aggregate_table")
+            if not isinstance(aggregate_path, str):
+                raise ValueError("step12 guard: biological-unit aggregate receipt is missing.")
+            aggregate_frame = pd.read_parquet(aggregate_path)
+        if stage_id == "step06":
             cfg = configs["qc"]
             stage_dir = out_root / "step06_qc"
             stage_dir.mkdir(exist_ok=True)
@@ -518,37 +580,36 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             qc = step06_qc_filter_intensities(frame[intensity_cols].apply(pd.to_numeric, errors="raise"), background_percentile=cfg.get("background_percentile", 10.0), signal_percentile=cfg.get("signal_percentile", 90.0), background_thresholds=cfg.get("background_thresholds"), output_dir=stage_dir, verbose=False)
             frame.loc[:, intensity_cols] = qc[intensity_cols]
             frame.to_csv(stage_dir / "cell_features_qc.csv", index=False)
+            frame.to_parquet(stage_dir / "cell_features_qc.parquet", index=True)
             snr = qc.attrs.get("marker_snr", {})
             (stage_dir / "marker_snr.json").write_text(json.dumps(snr, indent=2), encoding="utf-8")
             record("step06", "SUCCEEDED", "QC-corrected cell table written; marker SNR and plot recorded.", stage_dir, cfg)
-        if "classification" in configs:
+        if stage_id == "step07":
             cfg = configs["classification"]
             stage_dir = out_root / "step07_classification"
             stage_dir.mkdir(exist_ok=True)
             marker_config = CellTypeMarkerConfig(**cfg["marker_config"])
             frame = step07_classify_cells(frame, marker_config, core_col=cfg.get("core_column", core_col), output_dir=stage_dir, verbose=False)
             frame.to_csv(stage_dir / "cell_features_classified.csv", index=False)
+            frame.to_parquet(stage_dir / "cell_features_classified.parquet", index=True)
             record("step07", "SUCCEEDED", "Classified cell table written using the explicitly supplied marker config.", stage_dir, {**cfg, "marker_config": asdict(marker_config)})
-        if "programs" in configs:
+        if stage_id == "step08":
             cfg = configs["programs"]
             stage_dir = out_root / "step08_programs"
             stage_dir.mkdir(exist_ok=True)
             definitions = [ProgramDefinition(**v) for v in cfg["definitions"]]
             frame = step08_score_programs(frame, definitions, z_suffix=cfg.get("z_suffix", "_z"), output_dir=stage_dir, verbose=False)
             frame.to_csv(stage_dir / "cell_features_program_scored.csv", index=False)
+            frame.to_parquet(stage_dir / "cell_features_program_scored.parquet", index=True)
             record("step08", "SUCCEEDED", "Per-cell program score table written from explicitly supplied program definitions.", stage_dir, {"definitions": [asdict(v) for v in definitions], "z_suffix": cfg.get("z_suffix", "_z")})
-        aggregate_frame = None
-        if "aggregate" in configs:
+        if stage_id == "step09":
             cfg = configs["aggregate"]
             stage_dir = out_root / "step09_aggregation"
             stage_dir.mkdir(exist_ok=True)
             level = cfg["level"]
             target_col = "biological_unit_id" if level == "biological_unit_id" else core_col
-            if level == "biological_unit_id":
-                # Direct raw-cell aggregation; never aggregate a core summary again.
-                aggregate_input = frame
-            else:
-                aggregate_input = frame
+            # Always aggregate directly from cells, never from core summaries.
+            aggregate_input = frame
             aggregate_frame = step09_aggregate_per_core(aggregate_input, core_col=target_col, type_col=cfg.get("type_column", "cell_type"), type_categories=cfg.get("type_categories"), marker_cols=cfg.get("marker_columns", col["intensity_columns"]), program_score_cols=cfg.get("program_score_columns"), extra_group_col="condition", output_dir=stage_dir, verbose=False)
             if level == "biological_unit_id":
                 unit_to_specimen = frame.groupby("biological_unit_id")["specimen_id"].agg(lambda s: ";".join(sorted(set(s.astype(str)))))
@@ -556,8 +617,9 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 aggregate_frame["specimen_id"] = aggregate_frame[target_col].map(unit_to_specimen)
                 aggregate_frame["condition"] = aggregate_frame[target_col].map(unit_to_condition)
             aggregate_frame.to_csv(stage_dir / ("biological_unit_features.csv" if level == "biological_unit_id" else "core_features.csv"), index=False)
+            aggregate_frame.to_parquet(stage_dir / ("biological_unit_features.parquet" if level == "biological_unit_id" else "core_features.parquet"), index=True)
             record("step09", "SUCCEEDED", f"Raw cell table aggregated directly by {target_col}; output layer is {level}.", stage_dir, cfg)
-        if "spatial_features" in configs:
+        if stage_id == "step10":
             cfg = configs["spatial_features"]
             stage_dir = out_root / "step10_spatial_features"
             stage_dir.mkdir(exist_ok=True)
@@ -569,7 +631,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             result.to_csv(stage_dir / "spatial_features_descriptive.csv", index=False)
             (stage_dir / "spatial_metadata.json").write_text(json.dumps({"coordinate_units": params["coordinate_units"], "coordinate_frame": params["coordinate_frame"], "coordinate_scale_verified": params["coordinate_scale_verified"], "radii": cfg["radii"], "radii_units": params["coordinate_units"], "spatial_pairs": cfg.get("spatial_pairs", []), "interpretation": "descriptive only"}, indent=2), encoding="utf-8")
             record("step10", "SUCCEEDED", f"Descriptive spatial features written in {params['coordinate_units']} ({params['coordinate_frame']} frame); no inferential claim.", stage_dir, {**cfg, "coordinate_units": params["coordinate_units"], "coordinate_frame": params["coordinate_frame"]})
-        if "spatial_null" in configs:
+        if stage_id == "step11":
             cfg = configs["spatial_null"]
             stage_dir = out_root / "step11_spatial_null"
             stage_dir.mkdir(exist_ok=True)
@@ -589,7 +651,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             result.to_csv(stage_dir / "spatial_null_results.csv", index=False)
             (stage_dir / "spatial_metadata.json").write_text(json.dumps({"coordinate_units": params["coordinate_units"], "coordinate_frame": params["coordinate_frame"], "selected_pair": [cfg["source_type"], cfg["target_type"]], "k": cfg["k"], "n_permutations": cfg["n_permutations"], "tissue_mask_column": cfg.get("tissue_mask_column"), "permutation_region_assumption": params["spatial_null_region_assumption"], "claim_label": "Exploratory", "pre_specified": params["spatial_null_pre_specified"], "selection_after_viewing_data": params["spatial_null_selection_after_viewing_data"], "pre_specification_confirmed": params["spatial_null_pre_specification_confirmed"], "pre_specification_statement": params["spatial_null_pre_specification_statement"], "selection_statement": params["spatial_null_selection_statement"], "confirmation_recorded_at_utc": params["spatial_null_confirmation_recorded_at_utc"], "selection_adjustment": params["spatial_null_selection_adjustment"], "interpretation": "exploratory selected-pair label-swap spatial null; raw p-values are retained but not selection-adjusted"}, indent=2), encoding="utf-8")
             record("step11", "SUCCEEDED", f"EXPLORATORY spatial null for {cfg['source_type']} -> {cfg['target_type']} at k={cfg['k']} in {params['coordinate_units']} ({params['coordinate_frame']} frame); {params['spatial_null_region_assumption']}; no selection-adjusted claim.", stage_dir, {**cfg, "coordinate_units": params["coordinate_units"], "coordinate_frame": params["coordinate_frame"], "region_assumption": params["spatial_null_region_assumption"], "claim_label": "Exploratory", "pre_specification_statement": params["spatial_null_pre_specification_statement"], "selection_statement": params["spatial_null_selection_statement"], "confirmation_recorded_at_utc": params["spatial_null_confirmation_recorded_at_utc"], "selection_adjustment": params["spatial_null_selection_adjustment"]})
-        if "compare_groups" in configs:
+        if stage_id == "step12":
             cfg = configs["compare_groups"]
             stage_dir = out_root / "step12_group_comparison"
             stage_dir.mkdir(exist_ok=True)
@@ -608,20 +670,22 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             result = step12_compare_groups(aggregate_frame, group_col="condition", metrics=metrics, biological_unit_col=unit_col, output_dir=stage_dir, verbose=False)
             result.to_csv(stage_dir / "biological_unit_group_comparison.csv", index=False)
             record("step12", "SUCCEEDED", f"Two-group comparison executed at biological-unit n={aggregate_frame[unit_col].nunique()}.", stage_dir, {**cfg, "independent_biological_units": int(aggregate_frame[unit_col].nunique())})
+        if stage_id in {"step06", "step07", "step08"}:
+            stage_files = {"step06": "step06_qc/cell_features_qc.parquet", "step07": "step07_classification/cell_features_classified.parquet", "step08": "step08_programs/cell_features_program_scored.parquet"}
+            state["cell_table"] = str(out_root / stage_files[stage_id])
+        if stage_id == "step09":
+            filename = "biological_unit_features.parquet" if configs["aggregate"]["level"] == "biological_unit_id" else "core_features.parquet"
+            state["aggregate_table"] = str(out_root / "step09_aggregation" / filename)
+        if stage_id == "step10":
+            state["spatial_features_table"] = str(out_root / "step10_spatial_features" / "spatial_features_descriptive.csv")
+        if stage_id == "step11":
+            state["spatial_null_table"] = str(out_root / "step11_spatial_null" / "spatial_null_results.csv")
+        if stage_id == "step12":
+            state["comparison_table"] = str(out_root / "step12_group_comparison" / "biological_unit_group_comparison.csv")
+        status_path = out_root / f"{stage_id}_status.json"
+        status_path.write_text(json.dumps([event.model_dump(mode="json") for event in stages], indent=2), encoding="utf-8")
+        artifacts.append(str(status_path))
+        return WorkflowResult(status="SUCCEEDED", stages=stages, artifacts=artifacts, warnings=warnings, state=state)
     except Exception as exc:
-        event = StageEvent(stage_id="analysis", status="FAILED", message=f"Analysis failed: {exc}", parameters=params)
-        stages.append(event)
-        emit(event)
-        (out_root / "stage_statuses.json").write_text(json.dumps([s.model_dump(mode="json") for s in stages], indent=2), encoding="utf-8")
-        (out_root / "limitations.json").write_text(json.dumps(limitations, indent=2), encoding="utf-8")
-        artifacts.extend([str(out_root / "stage_statuses.json"), str(out_root / "limitations.json")])
-        return WorkflowResult(status="FAILED", stages=stages, artifacts=artifacts, warnings=warnings + [str(exc)])
-    if not stages:
-        event = StageEvent(stage_id="analysis", status="WARNING", message="No analysis stages were enabled; no numerical analysis was performed.")
-        stages.append(event)
-        emit(event)
-    statuses = [s.model_dump(mode="json") for s in stages]
-    (out_root / "stage_statuses.json").write_text(json.dumps(statuses, indent=2), encoding="utf-8")
-    (out_root / "limitations.json").write_text(json.dumps(limitations, indent=2), encoding="utf-8")
-    artifacts.extend([str(out_root / "stage_statuses.json"), str(out_root / "limitations.json")])
-    return WorkflowResult(status="WARNING" if not configs else "SUCCEEDED", stages=stages, artifacts=artifacts, warnings=warnings)
+        warnings.append(str(exc))
+        return finish("FAILED", f"Analysis failed: {exc}")

@@ -19,10 +19,10 @@ Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the C
 
 Use the left sidebar to open **Home**, **Project**, or a modality workbench; **Multimodal integration** opens the integration workspace. Home also provides direct modality cards. Use **Project** to set up a study folder, sample sheet, and results location with live sample-sheet validation beside the controls.
 
-A modality workbench opens directly on **Data & settings** with a compact summary banner at the top showing the active workflow's title, typical input formats, and purpose. Use the horizontal section bar on the main page to switch views:
+A modality workbench opens on **Introduction** by default, with the existing summary banner and horizontal section bar. Your selected section is retained when you return to a workspace. Use the section bar to switch views:
 
-- **Introduction** to inspect the workflow's stage cards, input and output bullets, shared own-data prerequisites, limitations, and **Methods & source** implementation locations. The cards describe declared stages and their conditions, not a particular run: not every stage or tool necessarily applies to every input or configuration. Outputs depend on the selected stages and successful execution; passing input checks does not guarantee them. This view is informational: it does not check inputs, start a run, or change results.
-- **Data & settings** to choose example or own-data inputs and configure the selected workflow in a side-by-side split pane.
+- **Introduction** to inspect the annotated workflow diagram, input and output bullets, shared own-data prerequisites, limitations, and **Methods & source** implementation locations. Diagram connections come from the same stage dependencies used for Nextflow execution. Scroll the diagram and expand its accessible details to inspect tools, conditions, inputs, outputs, and review gates. These are declared paths, not a record of a particular run: optional stages do not always run, and successful input checks do not guarantee outputs.
+- **Data & settings** to choose example or own-data inputs and configure the selected workflow in the existing side-by-side split pane, including reusable **Settings profiles**.
 - **Run** to check inputs, review requested decisions, and start or monitor work with a live execution monitor beside the preflight gate.
 - **Quality control**, **Results**, and **Files** to inspect the selected run's recorded review information and outputs.
 
@@ -37,6 +37,32 @@ To use your own data, select **Use my own data** and follow **Data & settings**:
 5. Start the run and follow progress in **Run**; open **Quality control** to review warnings, **Results** to explore plots and reports, and **Files** to access outputs. To continue a verified CycIF run, choose **Continue from a verified run** in its settings. The app creates a new run and reuses completed stages only when their inputs and settings still match.
 
 Source files are read-only. Results are written to a new run folder and do not overwrite earlier runs. Each modality keeps its own settings and run history.
+
+## Reusable settings
+
+Open **Settings profiles** in the parameter pane of **Data & settings**. The app displays a read-only default TOML file generated from the workflow's parameter definitions. TOML is plain text with comments, named settings, and typed values.
+
+1. Create a named user file from the defaults, or import a TOML file into the editor.
+2. Edit the settings and save the user file. Files are stored in `.spatial_toolkit/settings/` beneath the selected project.
+3. Select the saved file and choose **Apply saved settings**. Unspecified settings use the shipped defaults; they do not inherit another profile's overrides. The workflow controls show the applied values.
+4. Review the controls, then run **Check inputs** again. Applying or resetting a profile invalidates earlier checks and clears review confirmations. Saving a file alone does not apply it.
+
+Defaults cannot be overwritten through profile storage. A profile does not confirm specimen mappings, authorize an example, or approve a scientific review. Included examples retain their fixed technical-QC recipes. Each submitted run freezes its source and effective settings, hashes, and referenced configuration snapshots; changed configuration files block execution.
+
+## Plot customization and PDF export
+
+In **Results**, select a saved table or single-plane image and open **Customize and export a descriptive PDF**. Load the source, choose the appropriate view, and adjust axes, labels, scales, limits, colors, categorical legends, markers, lines, opacity, grid, font, and physical canvas size. Scalar images also support colormap, color limits, and a colorbar.
+
+Preview the settings before generating the PDF. Download the PDF and its provenance JSON; export settings can be downloaded and reused. Exports have unique names under the selected run's `plot_exports/` folder and never replace source files or earlier exports. Text remains editable in the PDF. The default publication style is Arial, 5-point text, and 0.5-point lines; these are plot defaults, separate from the app's interface typography.
+
+These are descriptive views of recorded values, not new statistical analyses or reconstructions of existing PDF figures. The app reports unsupported, oversized, missing, or nonfinite data rather than inventing values or silently substituting a downsampled export. An image artifact may itself be a recorded preview.
+
+## Workflow execution
+
+Every registered workflow runs its declared stages through Nextflow inside its allocated SLURM job. Runs retain the generated workflow, stage receipts, execution trace, and report. Dependencies and review gates prevent downstream work from being reported as completed when a prerequisite fails or needs review. Some scientific operations remain a single process where their canonical implementation requires shared in-memory state.
+
+Nextflow manages execution; it does not guarantee success, scientific validity, or accepted alignment. General automatic cache reuse is disabled. Existing reviewed CycIF child-run continuation and FLIM review paths retain their input, configuration, and provenance checks.
+
 
 ## Sample information
 

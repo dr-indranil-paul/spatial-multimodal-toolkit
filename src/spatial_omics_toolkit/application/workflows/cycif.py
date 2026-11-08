@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import importlib.metadata
 import json
 import os
 import re
-import shutil
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from spatial_omics_toolkit.application.contracts import (
     RunRequest,
     StageDefinition,
     StageEvent,
+    StageStatus,
     ToolReference,
     WorkflowDescriptor,
     WorkflowEmitter,
@@ -146,7 +148,15 @@ def _write_checkpoint_receipts(request: RunRequest, events: list[StageEvent]) ->
         }
     if receipts:
         from spatial_omics_toolkit.application.runs import atomic_json
-        atomic_json(request.run_dir / "checkpoint_receipts.json", {"workflow_id": request.workflow_id, "checkpoints": receipts})
+
+        # Conversion and registration are independent Nextflow branches.
+        # Serialize only the small read/merge/write of their shared receipt.
+        receipt_path = request.run_dir / "checkpoint_receipts.json"
+        with (request.run_dir / ".checkpoint_receipts.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            existing = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.exists() else {"workflow_id": request.workflow_id, "checkpoints": {}}
+            existing["checkpoints"].update(receipts)
+            atomic_json(receipt_path, existing)
 
 
 
@@ -263,268 +273,8 @@ def _warning_reuse_messages(reused: list[dict[str, str]]) -> list[str]:
     ]
 
 
-def _execute_export_resume(request: RunRequest, emit: WorkflowEmitter, reused: list[dict[str, str]]) -> WorkflowResult:
-    from spatial_omics_toolkit.cycif import step04_export_registered
-
-    selection = request.parameters["continuation"]
-    source = Path(selection["parent_run_dir"]).expanduser().resolve()
-    source_receipt = json.loads((source / "checkpoint_receipts.json").read_text(encoding="utf-8"))
-    checkpoints = source_receipt["checkpoints"]
-    handoffs = sorted(
-        Path(item["path"])
-        for item in checkpoints["registration"]["artifacts"]
-        if Path(item["path"]).name.endswith("_registration_handoff.json")
-    )
-    if not handoffs:
-        message = "Validated registration checkpoint has no durable per-scene registration handoff."
-        event = StageEvent(stage_id="export", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-    marker_panel = request.parameters.get("_resolved_marker_panel")
-    marker_map = marker_panel.get("marker_map") if isinstance(marker_panel, dict) else None
-    if not isinstance(marker_map, dict) or not marker_map:
-        message = "Export continuation requires the same explicitly confirmed marker panel used by the source registration run."
-        event = StageEvent(stage_id="export", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-    preflight_result = preflight(request)
-    if not preflight_result.ready:
-        message = "Export continuation preflight blocked: " + "; ".join(preflight_result.blockers)
-        event = StageEvent(stage_id="export", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=preflight_result.blockers)
-    resume_warnings = list(preflight_result.warnings) + _warning_reuse_messages(reused)
-    reused_events: list[StageEvent] = []
-    for stage_id in ("intake", "registration"):
-        source_status = next((item.get("source_status", "SUCCEEDED") for item in reused if item["stage_id"] == stage_id), "SUCCEEDED")
-        event = StageEvent(
-            stage_id=stage_id,
-            status="REUSED",
-            message=f"Reused verified {stage_id} checkpoint from parent run {source.name} (source status {source_status}).",
-            parameters={"parent_run_dir": str(source), "start_stage": "export", "source_status": source_status},
-            artifacts=[item["path"] for item in reused if item["stage_id"] == stage_id],
-        )
-        emit(event)
-        reused_events.append(event)
-    events: list[StageEvent] = []
-    output_artifacts: list[str] = []
-    for handoff_path in handoffs:
-        handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
-        scene_label = str(handoff["scene_label"])
-        reg_result = _load_registration_handoff(handoff_path)
-        if set(marker_map) != set(reg_result["round_order"]):
-            message = f"Marker-panel rounds {sorted(marker_map)} do not match registered rounds for {scene_label}: {reg_result['round_order']}."
-            event = StageEvent(stage_id="export", status="BLOCKED", message=message, parameters={"parent_run_dir": str(source), "scene_label": scene_label})
-            emit(event)
-            events.append(event)
-            return WorkflowResult(status="BLOCKED", stages=[*reused_events, *events], artifacts=output_artifacts, warnings=[message])
-        export_dir = request.run_dir / "cycif" / "exported" / scene_label
-        export_result = step04_export_registered(
-            reg_result,
-            scene_label,
-            str(export_dir),
-            marker_map=marker_map,
-            write_pipex_channels=False,
-            verbose=False,
-            **request.parameters.get("registration", {}).get("export_config", {}),
-        )
-        scene_artifacts = [str(path) for path in export_dir.rglob("*") if path.is_file()]
-        if not scene_artifacts:
-            raise RuntimeError(f"step04_export_registered produced no outputs for {scene_label}: {export_result}")
-        output_artifacts.extend(scene_artifacts)
-        event = StageEvent(
-            stage_id="export",
-            status="SUCCEEDED",
-            message=f"Exported {scene_label} from verified registered TIFFs and transform metadata.",
-            tool_versions={"spatial_omics_toolkit": _version("spatial-omics-toolkit")},
-            parameters={"parent_run_dir": str(source), "registration_handoff": str(handoff_path), "marker_panel": marker_panel},
-            artifacts=scene_artifacts,
-        )
-        emit(event)
-        events.append(event)
-        segmentation = request.parameters.get("segmentation", {})
-        if isinstance(segmentation, dict) and segmentation.get("enabled") is True:
-            if segmentation.get("backend") != "MCMICRO":
-                message = "Export continuation with segmentation requires the supported MCMICRO backend."
-                blocked = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-                emit(blocked)
-                events.append(blocked)
-                return WorkflowResult(status="BLOCKED", stages=[*reused_events, *events], artifacts=output_artifacts, warnings=[message])
-            if not os.environ.get("SLURM_JOB_ID"):
-                message = "MCMICRO execution is blocked outside an allocated SLURM worker."
-                blocked = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-                emit(blocked)
-                events.append(blocked)
-                return WorkflowResult(status="BLOCKED", stages=[*reused_events, *events], artifacts=output_artifacts, warnings=[message])
-            from spatial_omics_toolkit.cycif import MCMICROConfig, step05_segment_cells
-
-            runtime = preflight_result.resolved_parameters["mcmicro_runtime"]
-            version_process = subprocess.run([runtime["wrapper"], "-version"], check=True, capture_output=True, text=True, timeout=60)
-            mcmicro_version = (version_process.stdout or version_process.stderr).strip() or "version command returned no output"
-            composite_path = export_result.get("composite_path")
-            if not composite_path or not Path(str(composite_path)).is_file():
-                raise RuntimeError(f"step04_export_registered returned no usable composite for segmentation of {scene_label}.")
-            config_values = segmentation.get("parameters", {})
-            config = MCMICROConfig(mcmicro_bin=runtime["wrapper"], mcmicro_nf=str(Path(runtime["home"]) / "main.nf"), **config_values)
-            project_dir = request.run_dir / "cycif" / "mcmicro" / scene_label
-            emit(StageEvent(stage_id="segmentation", status="RUNNING", message=f"Running MCMICRO for {scene_label} after resumed export.", tool_versions={"MCMICRO": mcmicro_version, "spatial_omics_toolkit": _version("spatial-omics-toolkit")}, parameters={"project_dir": str(project_dir), "composite_path": str(composite_path)}))
-            segmentation_result = step05_segment_cells("mcmicro", scene_label=scene_label, composite_ometiff_path=str(composite_path), marker_map=marker_map, project_dir=str(project_dir), mcmicro_config=config, run=True, load_results=True, verbose=False)
-            segmentation_artifacts = [str(path) for path in project_dir.rglob("*") if path.is_file()]
-            if not segmentation_artifacts:
-                raise RuntimeError(f"MCMICRO returned no artifacts for {scene_label}: {segmentation_result}")
-            output_artifacts.extend(segmentation_artifacts)
-            completed = StageEvent(stage_id="segmentation", status="SUCCEEDED", message=f"MCMICRO {mcmicro_version} completed for {scene_label} after resumed export.", tool_versions={"MCMICRO": mcmicro_version, "spatial_omics_toolkit": _version("spatial-omics-toolkit")}, parameters={"backend": "MCMICRO", "segmenter": config.segmenter, "result": str(segmentation_result)}, artifacts=segmentation_artifacts)
-            emit(completed)
-            events.append(completed)
-    parent_metadata = json.loads((source / "run.json").read_text(encoding="utf-8"))
-    from spatial_omics_toolkit.application.runs import atomic_json
-    warning_stage_ids = sorted({item["stage_id"] for item in reused if item.get("source_status") == "WARNING"})
-    atomic_json(request.run_dir / "resume_receipt.json", {
-        "parent_run_id": parent_metadata.get("run_id"),
-        "parent_run_path": str(source),
-        "start_stage": "export",
-        "raw_input_fingerprint": _input_fingerprint(request.run_dir),
-        "reused_checkpoints": reused,
-        "warning_review_confirmed": selection.get("warning_review_confirmed") is True,
-        "warning_stage_ids": warning_stage_ids,
-        "warning_review_recorded_at_utc": datetime.now(timezone.utc).isoformat() if warning_stage_ids else None,
-    })
-    _write_checkpoint_receipts(request, [*reused_events, *events])
-    child_receipts = json.loads((request.run_dir / "checkpoint_receipts.json").read_text(encoding="utf-8"))
-    child_receipts["checkpoints"] = {
-        "intake": checkpoints["intake"],
-        "registration": checkpoints["registration"],
-        **child_receipts["checkpoints"],
-    }
-    atomic_json(request.run_dir / "checkpoint_receipts.json", child_receipts)
-    return WorkflowResult(status="WARNING" if resume_warnings else "SUCCEEDED", stages=[*reused_events, *events], artifacts=[item["path"] for item in reused] + output_artifacts, warnings=resume_warnings)
 
 
-def _execute_segmentation_resume(request: RunRequest, emit: WorkflowEmitter, reused: list[dict[str, str]]) -> WorkflowResult:
-    selection = request.parameters["continuation"]
-    source = Path(selection["parent_run_dir"]).expanduser().resolve()
-    receipt = json.loads((source / "checkpoint_receipts.json").read_text(encoding="utf-8"))
-    checkpoints = receipt["checkpoints"]
-    export_checkpoint = checkpoints["export"]
-    marker_map = export_checkpoint["settings"].get("marker_map")
-    if not isinstance(marker_map, dict) or not marker_map:
-        message = "Validated export checkpoint lacks the marker map required by segmentation."
-        event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-    composites = sorted(
-        Path(item["path"])
-        for item in export_checkpoint["artifacts"]
-        if Path(item["path"]).name.endswith("_composite.ome.tif")
-    )
-    if not composites:
-        message = "Validated export checkpoint has no composite OME-TIFF for segmentation."
-        event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-    check = preflight(request)
-    if not check.ready:
-        message = "Segmentation continuation preflight blocked: " + "; ".join(check.blockers)
-        event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=check.blockers)
-    resume_warnings = list(check.warnings) + _warning_reuse_messages(reused)
-    if not os.environ.get("SLURM_JOB_ID"):
-        message = "MCMICRO execution is blocked outside an allocated SLURM worker."
-        event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-    from spatial_omics_toolkit.cycif import MCMICROConfig, step05_segment_cells
-
-    segmentation = request.parameters.get("segmentation", {})
-    if segmentation.get("enabled") is not True or segmentation.get("backend") != "MCMICRO":
-        message = "Continue after export requires segmentation.enabled=true and backend='MCMICRO'."
-        event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-    runtime = check.resolved_parameters["mcmicro_runtime"]
-    version_process = subprocess.run([runtime["wrapper"], "-version"], check=True, capture_output=True, text=True, timeout=60)
-    mcmicro_version = (version_process.stdout or version_process.stderr).strip() or "version command returned no output"
-    config_values = segmentation.get("parameters", {})
-    if not isinstance(config_values, dict):
-        raise ValueError("segmentation.parameters must be an object of MCMICROConfig settings.")
-    config = MCMICROConfig(mcmicro_bin=runtime["wrapper"], mcmicro_nf=str(Path(runtime["home"]) / "main.nf"), **config_values)
-    reused_events: list[StageEvent] = []
-    for stage_id in ("intake", "registration", "export"):
-        stage_artifacts = [item["path"] for item in reused if item["stage_id"] == stage_id]
-        source_status = next((item.get("source_status", "SUCCEEDED") for item in reused if item["stage_id"] == stage_id), "SUCCEEDED")
-        event = StageEvent(
-            stage_id=stage_id,
-            status="REUSED",
-            message=f"Reused verified {stage_id} checkpoint from parent run {source.name} (source status {source_status}).",
-            parameters={"parent_run_dir": str(source), "start_stage": "segmentation", "source_status": source_status},
-            artifacts=stage_artifacts,
-        )
-        emit(event)
-        reused_events.append(event)
-    results: list[StageEvent] = []
-    for composite in composites:
-        scene_label = composite.name.removesuffix("_composite.ome.tif")
-        project_dir = request.run_dir / "cycif" / "mcmicro" / scene_label
-        emit(StageEvent(
-            stage_id="segmentation",
-            status="RUNNING",
-            message=f"Running MCMICRO for {scene_label} from the verified parent export.",
-            tool_versions={"MCMICRO": mcmicro_version, "spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]},
-            parameters={"parent_composite": str(composite), "project_dir": str(project_dir), "marker_map": marker_map},
-        ))
-        result = step05_segment_cells(
-            "mcmicro",
-            scene_label=scene_label,
-            composite_ometiff_path=str(composite),
-            marker_map=marker_map,
-            project_dir=str(project_dir),
-            mcmicro_config=config,
-            run=True,
-            load_results=True,
-            verbose=False,
-        )
-        artifacts = [str(path) for path in project_dir.rglob("*") if path.is_file()]
-        if not artifacts:
-            raise RuntimeError(f"MCMICRO returned without run-scoped artifacts for {scene_label}: {result}")
-        event = StageEvent(
-            stage_id="segmentation",
-            status="SUCCEEDED",
-            message=f"MCMICRO {mcmicro_version} completed for {scene_label} from a verified export checkpoint.",
-            tool_versions={"MCMICRO": mcmicro_version, "spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]},
-            parameters={"backend": "MCMICRO", "segmenter": config.segmenter, "parent_composite": str(composite), "result": str(result)},
-            artifacts=artifacts,
-        )
-        emit(event)
-        results.append(event)
-    parent_metadata = json.loads((source / "run.json").read_text(encoding="utf-8"))
-    warning_stage_ids = sorted({item["stage_id"] for item in reused if item.get("source_status") == "WARNING"})
-    atomic_payload = {
-        "parent_run_id": parent_metadata.get("run_id"),
-        "parent_run_path": str(source),
-        "start_stage": "segmentation",
-        "raw_input_fingerprint": _input_fingerprint(request.run_dir),
-        "reused_checkpoints": reused,
-        "warning_review_confirmed": selection.get("warning_review_confirmed") is True,
-        "warning_stage_ids": warning_stage_ids,
-        "warning_review_recorded_at_utc": datetime.now(timezone.utc).isoformat() if warning_stage_ids else None,
-    }
-    from spatial_omics_toolkit.application.runs import atomic_json
-    atomic_json(request.run_dir / "resume_receipt.json", atomic_payload)
-    child_checkpoints = {stage: checkpoints[stage] for stage in ("intake", "registration", "export")}
-    for event in results:
-        if event.artifacts:
-            child_checkpoints["segmentation"] = {
-                "workflow_id": "cycif-raw-czi",
-                "stage_id": "segmentation",
-                "input_fingerprint": _input_fingerprint(request.run_dir),
-                "settings": _stage_parameters(request.parameters, "segmentation"),
-                "settings_sha256": _canonical_hash(_stage_parameters(request.parameters, "segmentation")),
-                "tool_identity": {**_tool_identity("segmentation"), "MCMICRO": mcmicro_version},
-                "artifacts": [{"path": str(Path(path).resolve()), "sha256": _sha256(Path(path))} for path in event.artifacts],
-            }
-    atomic_json(request.run_dir / "checkpoint_receipts.json", {"workflow_id": "cycif-raw-czi", "checkpoints": child_checkpoints})
-    return WorkflowResult(status="WARNING" if resume_warnings else "SUCCEEDED", stages=[*reused_events, *results], artifacts=[item["path"] for item in reused] + [path for event in results for path in event.artifacts], warnings=resume_warnings)
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -579,7 +329,7 @@ def _intake_options(parameters: dict[str, Any]) -> dict[str, Any]:
     return {"config": RawImageIntakeConfig(**options)}
 
 
-def _resolve_marker_panel(parameters: dict[str, Any]) -> dict[str, Any] | None:
+def _resolve_marker_panel(parameters: dict[str, Any], project_root: Path) -> dict[str, Any] | None:
     registration = parameters.get("registration")
     if not isinstance(registration, dict):
         return None
@@ -588,7 +338,10 @@ def _resolve_marker_panel(parameters: dict[str, Any]) -> dict[str, Any] | None:
         return None
     if registration.get("marker_panel_confirmed") is not True:
         raise ValueError("Marker panel preview must be explicitly confirmed before export or segmentation.")
-    panel_path = Path(str(panel_value)).expanduser().resolve()
+    panel_path = Path(str(panel_value)).expanduser()
+    if not panel_path.is_absolute():
+        panel_path = project_root / panel_path
+    panel_path = panel_path.resolve()
     if not panel_path.is_file():
         raise ValueError(f"Selected marker_panel_metadata.csv does not exist: {panel_path}")
     import csv
@@ -634,11 +387,11 @@ def describe() -> WorkflowDescriptor:
         title="CyCIF raw CZI image processing",
         description="Inventory raw CyCIF images and check their OME metadata in a SLURM-allocated Python worker. Optional conversion, registration, export, and segmentation require configuration; tool failures are reported.",
         stages=[
-            StageDefinition(stage_id="intake", title="Image intake and quality checks", purpose="Inventory CZI files, parse acquisition filenames, check cycle and scene coverage and OME metadata, and write a quality-control report.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step01_scan_intake", version=toolkit_version, role="Inventory raw CZI images and check OME metadata", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/intake.py", function_name="step01_scan_intake", role="Inventory raw CZI images and check metadata")]),
-            StageDefinition(stage_id="conversion", title="Convert images to OME-TIFF", purpose="Optionally convert raw CZI images to OME-TIFF through the toolkit's SLURM dispatch interface.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step02_convert_raw_images", version=toolkit_version, role="Convert CZI images", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/convert.py", function_name="step02_convert_raw_images", role="Optionally convert CZI images")]),
-            StageDefinition(stage_id="registration", title="Align imaging rounds", purpose="Register configured imaging rounds to a user-selected reference round; failures are reported as stage failures.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step03_register_rounds", version=toolkit_version, role="Register imaging rounds", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="step03_register_rounds", role="Optionally register imaging rounds")]),
-            StageDefinition(stage_id="export", title="Export marker images", purpose="Export registered scenes after the marker-to-channel mapping is confirmed; missing or mismatched mappings prevent export.", tools=[ToolReference(name="spatial_omics_toolkit.cycif.step04_export_registered", version=toolkit_version, role="Export registered images", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/export_images.py", function_name="step04_export_registered", role="Export images using the confirmed marker mapping")]),
-            StageDefinition(stage_id="segmentation", title="Segment cells", purpose="Run the configured MCMICRO cell segmentation workflow on exported scenes in the allocated worker.", tools=[ToolReference(name="MCMICRO", version=toolkit_version, role="Cell segmentation", documentation_url=None)], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/segment.py", function_name="step05_segment_cells", role="Run MCMICRO through the toolkit")]),
+            StageDefinition(stage_id="intake", title="Image intake and quality checks", purpose="Inventory CZI files and check acquisition coverage and OME metadata.", depends_on=[], condition="Always; failed QC blocks downstream imaging", inputs=["Raw CZI files", "Acquisition assumptions"], outputs=["Intake inventory and QC report"], tools=[ToolReference(name="spatial_omics_toolkit.cycif.step01_scan_intake", version=toolkit_version, role="Inventory raw CZI images and check OME metadata")], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/intake.py", function_name="step01_scan_intake", role="Inventory raw CZI images and check metadata")]),
+            StageDefinition(stage_id="conversion", title="Convert images to OME-TIFF", purpose="Optionally retain converted CZI images; registration reads the original files.", depends_on=["intake"], condition="conversion.enabled", inputs=["Raw CZI files", "Intake QC"], outputs=["Converted OME-TIFF files"], tools=[ToolReference(name="spatial_omics_toolkit.cycif.step02_convert_raw_images", version=toolkit_version, role="Convert CZI images")], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/convert.py", function_name="step02_convert_raw_images", role="Optionally convert CZI images")]),
+            StageDefinition(stage_id="registration", title="Align imaging rounds", purpose="Register CZI imaging rounds to the selected reference round.", depends_on=["intake"], condition="registration.enabled and confirmed grouping", inputs=["Raw CZI files", "Intake QC", "Confirmed grouping"], outputs=["Registered TIFFs", "Registration handoffs"], tools=[ToolReference(name="spatial_omics_toolkit.cycif.step03_register_rounds", version=toolkit_version, role="Register imaging rounds")], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="step03_register_rounds", role="Register imaging rounds")]),
+            StageDefinition(stage_id="export", title="Export marker images", purpose="Export registered scenes using a confirmed marker-to-channel map.", depends_on=["registration"], condition="Registration enabled and marker panel confirmed", inputs=["Registration handoffs", "Confirmed marker panel"], outputs=["Composite OME-TIFF and metadata"], tools=[ToolReference(name="spatial_omics_toolkit.cycif.step04_export_registered", version=toolkit_version, role="Export registered images")], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/export_images.py", function_name="step04_export_registered", role="Export images using the confirmed marker mapping")]),
+            StageDefinition(stage_id="segmentation", title="Segment cells", purpose="Run the configured MCMICRO workflow on exported scenes in the allocated worker.", depends_on=["export"], condition="segmentation.enabled and MCMICRO selected", inputs=["Composite OME-TIFF", "Confirmed marker panel"], outputs=["MCMICRO segmentation files"], tools=[ToolReference(name="MCMICRO", version=toolkit_version, role="Cell segmentation")], implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/segment.py", function_name="step05_segment_cells", role="Run MCMICRO through the toolkit")]),
         ],
         parameter_fields=[
             ParameterField(name="intake.filename_pattern", label="Acquisition filename regex", kind="text", required=True, section="Intake", stage_id="intake", help_text="User-reviewed regex with named groups round, markers, slide, date, acq_id, and scene. Use explicit empty named captures for fields absent from source filenames."),
@@ -832,137 +585,184 @@ def _load_registration_handoff(path: Path) -> dict[str, Any]:
             "czi_path": item.get("czi_path"),
             "czi_size_bytes": int(item.get("czi_size_bytes", 0)),
         }
-    return {
-        "rounds": rounds,
-        "round_order": list(handoff["round_order"]),
-        "reference_shape": tuple(handoff["reference_shape"]),
-        "pixel_size_um": handoff.get("pixel_size_um"),
-        "params": handoff.get("params", {}),
+    return dict(
+        rounds=rounds,
+        round_order=list(handoff["round_order"]),
+        reference_shape=tuple(handoff["reference_shape"]),
+        pixel_size_um=handoff.get("pixel_size_um"),
+        params=handoff.get("params", {}),
+    )
+
+
+def _continuation_stage(request: RunRequest, stage_id: str, emit: WorkflowEmitter) -> WorkflowResult | None:
+    """Validate the complete source lineage before exposing any reused artifact."""
+    selection = request.parameters.get("continuation", {})
+    if not isinstance(selection, dict) or selection.get("mode") != "continue":
+        return None
+    start = selection.get("start_stage")
+    required = {
+        "conversion": {"intake"},
+        "registration": {"intake"},
+        "export": {"intake", "registration"},
+        "segmentation": {"intake", "registration", "export"},
     }
+    if start not in required:
+        raise ValueError(f"Unsupported continuation boundary: {start!r}.")
+    if start in {"conversion", "registration", "segmentation"}:
+        config = request.parameters.get(str(start), {})
+        if not isinstance(config, dict) or config.get("enabled") is not True:
+            raise ValueError(f"{start.capitalize()} continuation requires {start}.enabled=true.")
+    if start in {"export", "segmentation"}:
+        _resolve_marker_panel(request.parameters, request.project_root)
+    reasons, reused = validate_continuation(request)
+    if reasons:
+        raise ValueError("CyCIF continuation blocked: " + "; ".join(reasons))
+    source = Path(selection["parent_run_dir"]).expanduser().resolve()
+    if stage_id == "intake":
+        from spatial_omics_toolkit.application.runs import atomic_json
 
-
-def _execute_raw(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    check = preflight(request)
-    if not check.ready:
-        event = StageEvent(stage_id="intake", status="BLOCKED", message="CyCIF preflight blocked: " + "; ".join(check.blockers), parameters=check.resolved_parameters)
+        metadata = json.loads((source / "run.json").read_text(encoding="utf-8"))
+        warning_ids = sorted({item["stage_id"] for item in reused if item.get("source_status") == "WARNING"})
+        atomic_json(request.run_dir / "resume_receipt.json", {
+            "parent_run_id": metadata.get("run_id"), "parent_run_path": str(source),
+            "start_stage": start, "raw_input_fingerprint": _input_fingerprint(request.run_dir),
+            "reused_checkpoints": reused, "warning_review_confirmed": selection.get("warning_review_confirmed") is True,
+            "warning_stage_ids": warning_ids,
+            "warning_review_recorded_at_utc": datetime.now(timezone.utc).isoformat() if warning_ids else None,
+        })
+    if stage_id == "conversion" and start != "conversion":
+        event = StageEvent(stage_id=stage_id, status="SKIPPED", message="Conversion is independent of the selected continuation boundary.")
         emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=check.blockers + check.warnings)
-    from spatial_omics_toolkit.cycif import step01_scan_intake
+        return WorkflowResult(status="SKIPPED", stages=[event])
+    if stage_id not in required[start]:
+        return None
+    stage_items = [item for item in reused if item["stage_id"] == stage_id]
+    artifacts = [item["path"] for item in stage_items]
+    source_status = stage_items[0]["source_status"]
+    event = StageEvent(stage_id=stage_id, status="REUSED", message=f"Reused verified {stage_id} checkpoint from parent run {source.name} (source status {source_status}).", parameters={"parent_run_dir": str(source), "start_stage": start, "source_status": source_status}, artifacts=artifacts)
+    emit(event)
+    from spatial_omics_toolkit.application.runs import atomic_json
 
-    stages: list[StageEvent] = []
-    warnings = list(check.warnings)
-    conversion = request.parameters.get("conversion")
-    intake_dir = request.run_dir / "cycif" / "intake"
+    source_checkpoint = json.loads((source / "checkpoint_receipts.json").read_text(encoding="utf-8"))["checkpoints"][stage_id]
+    receipt_path = request.run_dir / "checkpoint_receipts.json"
+    with (request.run_dir / ".checkpoint_receipts.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        child = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.exists() else {"workflow_id": request.workflow_id, "checkpoints": {}}
+        child["checkpoints"][stage_id] = source_checkpoint
+        atomic_json(receipt_path, child)
+    state: dict[str, Any] = {}
+    if stage_id == "registration":
+        state["handoffs"] = sorted(path for path in artifacts if path.endswith("_registration_handoff.json"))
+    if stage_id == "export":
+        state["composites"] = {Path(path).name.removesuffix("_composite.ome.tif"): path for path in artifacts if path.endswith("_composite.ome.tif")}
+        state["marker_map"] = source_checkpoint["settings"].get("marker_map")
+    return WorkflowResult(status="REUSED", stages=[event], artifacts=artifacts, warnings=_warning_reuse_messages(stage_items), state=state)
+
+
+def execute_stage(request: RunRequest, stage_id: str, upstream: dict[str, WorkflowResult], emit: WorkflowEmitter) -> WorkflowResult:
+    """Execute exactly one imaging stage, communicating through durable files."""
+    dependencies = {stage.stage_id: stage.depends_on for stage in describe().stages}
+    if stage_id not in dependencies:
+        raise ValueError(f"Unknown CyCIF stage: {stage_id}")
+    events: list[StageEvent] = []
     artifacts: list[str] = []
-    current_stage = "intake"
+    warnings: list[str] = []
+    state: dict[str, Any] = {}
+
+    def record(event: StageEvent) -> None:
+        events.append(event)
+        emit(event)
+
+    def finish(status: StageStatus, message: str, parameters: dict[str, Any] | None = None) -> WorkflowResult:
+        serializable_parameters = json.loads(json.dumps(parameters or {}, default=str))
+        event = StageEvent(stage_id=stage_id, status=status, message=message, parameters=serializable_parameters, artifacts=artifacts, tool_versions={"spatial_omics_toolkit": _version("spatial-omics-toolkit")})
+        record(event)
+        if status in {"FAILED", "BLOCKED"}:
+            warnings.append(message)
+        if status in {"SUCCEEDED", "WARNING"}:
+            try:
+                _write_checkpoint_receipts(request, events)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        return WorkflowResult(status=status, stages=events, artifacts=artifacts, warnings=warnings, state=state)
+
+    for dependency in dependencies[stage_id]:
+        result = upstream.get(dependency)
+        if result is None or result.status not in {"SUCCEEDED", "WARNING", "REUSED", "SKIPPED"} or (dependency == "intake" and result.status == "SKIPPED"):
+            return finish("BLOCKED", f"Required upstream stage {dependency} is missing or not cleared.")
     try:
-        options = _intake_options(request.parameters)
-        selection = request.parameters.get("continuation", {})
-        resumed_start = selection.get("start_stage") if isinstance(selection, dict) and selection.get("mode") == "continue" else None
-        inherited_intake = [item for item in request.parameters.get("_reused_checkpoints", []) if item.get("stage_id") == "intake"]
-        if resumed_start in {"conversion", "registration"}:
-            source = Path(selection["parent_run_dir"]).expanduser().resolve()
-            source_status = next((item.get("source_status", "SUCCEEDED") for item in inherited_intake), "SUCCEEDED")
-            event = StageEvent(
-                stage_id="intake", status="REUSED",
-                message=f"Reused verified intake checkpoint from parent run {source.name} (source status {source_status}).",
-                parameters={"parent_run_dir": str(source), "start_stage": resumed_start, "source_status": source_status},
-                artifacts=[item["path"] for item in inherited_intake],
-            )
-            emit(event)
-            stages.append(event)
-            artifacts = [item["path"] for item in inherited_intake]
-            warnings.extend(_warning_reuse_messages(inherited_intake))
-            has_intake_issues = False
-            intake_issues: dict[str, Any] = {}
-        else:
-            emit(StageEvent(stage_id="intake", status="RUNNING", message="Scanning raw CZI inventory and validating naming, cycle/scene coverage, and OME metadata.", tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"modality_dir": str(request.modality_dir), **request.parameters.get("intake", {})}))
-            result = step01_scan_intake(raw_dir=str(request.modality_dir), reports_dir=str(intake_dir), generate_html_report=True, generate_dapi_preview=False, strict=False, verbose=False, **options)
-            artifacts = [str(p) for p in sorted(intake_dir.rglob("*")) if p.is_file()]
+        resumed = _continuation_stage(request, stage_id, record)
+        if resumed is not None:
+            return resumed
+        registration = request.parameters.get("registration", {})
+        segmentation = request.parameters.get("segmentation", {})
+        conversion = request.parameters.get("conversion", {})
+        registration_enabled = (isinstance(registration, dict) and registration.get("enabled") is True) or (stage_id == "export" and upstream["registration"].status == "REUSED")
+        segmentation_enabled = isinstance(segmentation, dict) and segmentation.get("enabled") is True
+        if stage_id == "conversion" and (not isinstance(conversion, dict) or conversion.get("enabled") is not True):
+            return finish("SKIPPED", "Conversion was not enabled.")
+        if stage_id in {"registration", "export"} and not registration_enabled:
+            if stage_id == "export" and segmentation_enabled:
+                return finish("BLOCKED", "Segmentation requires registration and export.")
+            return finish("SKIPPED", "Registration and export were not enabled.")
+        if stage_id == "segmentation" and not segmentation_enabled:
+            return finish("SKIPPED", "Segmentation was not enabled.")
+        if stage_id in {"export", "segmentation"} and upstream[dependencies[stage_id][0]].status == "SKIPPED":
+            return finish("BLOCKED", "The required imaging stage was skipped.")
+
+        if stage_id == "intake":
+            check = preflight(request)
+            if not check.ready:
+                warnings.extend(check.blockers + check.warnings)
+                return finish("BLOCKED", "CyCIF preflight blocked: " + "; ".join(check.blockers), check.resolved_parameters)
+            from spatial_omics_toolkit.cycif import step01_scan_intake
+
+            warnings.extend(check.warnings)
+            intake_dir = request.run_dir / "cycif" / "intake"
+            record(StageEvent(stage_id=stage_id, status="RUNNING", message="Scanning raw CZI inventory and validating acquisition metadata."))
+            result = step01_scan_intake(raw_dir=str(request.modality_dir), reports_dir=str(intake_dir), generate_html_report=True, generate_dapi_preview=False, strict=False, verbose=False, **_intake_options(request.parameters))
+            artifacts.extend(str(path) for path in sorted(intake_dir.rglob("*")) if path.is_file())
             checks = getattr(result, "checks", [])
-            check_rows = checks.to_dict(orient="records") if hasattr(checks, "to_dict") else []
-            failed_checks = [row for row in check_rows if str(row.get("Status", "")).strip() == "⚠"]
-            unassessed_checks = [row for row in check_rows if str(row.get("Status", "")).strip() == "—" and str(row.get("Check", "")).startswith(("Channel count", "Pixel size"))]
-            intake_issues = {
-                "check_warnings": failed_checks,
-                "checks_unassessed": unassessed_checks,
-                "coverage_missing": [str(x) for x in getattr(result, "coverage_missing", []) or []],
-                "unparsed": [str(x) for x in getattr(result, "unparsed", []) or []],
-                "preflight_warnings": check.warnings,
-            }
-            has_intake_issues = bool(failed_checks or intake_issues["coverage_missing"] or intake_issues["unparsed"])
-            has_intake_warnings = bool(unassessed_checks or check.warnings)
-            status = "WARNING" if has_intake_issues or has_intake_warnings else "SUCCEEDED"
-            if has_intake_warnings:
-                warnings.append(json.dumps({"checks_unassessed": unassessed_checks, "preflight_warnings": check.warnings}, default=str))
-            message = "Intake found failed QC checks; review the report. Downstream imaging stages are blocked." if has_intake_issues else ("Intake completed with unassessed QC checks; review the report and warning details before continuing." if has_intake_warnings else "Canonical step01_scan_intake completed.")
-            event = StageEvent(stage_id="intake", status=status, message=message, tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters=intake_issues, artifacts=artifacts)
-            emit(event)
-            stages.append(event)
-            if has_intake_issues:
-                warnings.append(json.dumps(intake_issues, default=str))
-                gate = StageEvent(stage_id="conversion", status="BLOCKED", message="Downstream imaging stages were not started because intake reported QC warnings.", parameters=intake_issues)
-                emit(gate)
-                stages.append(gate)
-                return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings)
-        if resumed_start == "registration":
-            conversion = None
-        elif isinstance(conversion, dict) and conversion.get("enabled") is True:
-            pass
-        else:
-            conversion = None
-        current_stage = "conversion"
-        if conversion:
-            if not __import__("os").environ.get("SLURM_JOB_ID"):
-                message = "CZI conversion is blocked outside an allocated SLURM worker."
-                event = StageEvent(stage_id="conversion", status="BLOCKED", message=message)
-                emit(event)
-                stages.append(event)
-                return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings + [message])
+            rows = checks.to_dict(orient="records") if hasattr(checks, "to_dict") else []
+            failed = [row for row in rows if str(row.get("Status", "")).strip() == "⚠"]
+            unassessed = [row for row in rows if str(row.get("Status", "")).strip() == "—" and str(row.get("Check", "")).startswith(("Channel count", "Pixel size"))]
+            issues = {"check_warnings": failed, "checks_unassessed": unassessed, "coverage_missing": [str(x) for x in getattr(result, "coverage_missing", []) or []], "unparsed": [str(x) for x in getattr(result, "unparsed", []) or []], "preflight_warnings": check.warnings}
+            if failed or issues["coverage_missing"] or issues["unparsed"]:
+                return finish("BLOCKED", "Intake found failed QC checks; review the report. Downstream imaging stages are blocked.", issues)
+            if unassessed or check.warnings:
+                warnings.append(json.dumps({"checks_unassessed": unassessed, "preflight_warnings": check.warnings}, default=str))
+                return finish("WARNING", "Intake completed with unassessed QC checks; review the report and warning details.", issues)
+            return finish("SUCCEEDED", "Canonical step01_scan_intake completed.", issues)
+
+        if stage_id == "conversion":
+            if not os.environ.get("SLURM_JOB_ID"):
+                return finish("BLOCKED", "CZI conversion is blocked outside an allocated SLURM worker.")
             from spatial_omics_toolkit.cycif import ImageConversionConfig, step02_convert_raw_images
 
-            conversion_options = conversion.get("config", {})
-            if not isinstance(conversion_options, dict):
+            options = conversion.get("config", {})
+            if not isinstance(options, dict):
                 raise ValueError("parameters.conversion.config must be an object of ImageConversionConfig fields.")
-            conversion_config = ImageConversionConfig(**conversion_options)
-            czi_files = [Path(value) for value in check.resolved_parameters.get("czi_files", [])]
-            input_folders = sorted({path.parent for path in czi_files})
-            if not czi_files or not input_folders:
+            config = ImageConversionConfig(**options)
+            files = sorted(path for path in request.modality_dir.rglob("*") if path.is_file() and path.suffix.lower() == ".czi")
+            if not files:
                 raise RuntimeError("No raw CZI files were inventoried for conversion.")
-            emit(StageEvent(stage_id="conversion", status="RUNNING", message=f"Converting {len(czi_files)} inventoried CZI file(s) across {len(input_folders)} physical folder(s) in the allocated SLURM worker.", tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"dispatch": "inprocess within allocated worker", "input_files": [str(path) for path in czi_files], **conversion_options}))
-            conversion_outputs: list[str] = []
-            conversion_results: dict[str, Any] = {}
-            for input_folder in input_folders:
-                relative = input_folder.relative_to(request.modality_dir)
-                folder_key = relative.as_posix().replace("/", "__") or "root"
-                conversion_dir = request.run_dir / "cycif" / "converted" / folder_key
-                conversion_dir.mkdir(parents=True, exist_ok=True)
-                expected_inputs = [str(path) for path in czi_files if path.parent == input_folder]
-                conversion_results[str(input_folder)] = step02_convert_raw_images(str(input_folder), str(conversion_dir), dispatch="inprocess", conversion_config=conversion_config, strict=True, verbose=False)
-                folder_outputs = [str(p) for p in sorted(conversion_dir.rglob("*")) if p.is_file()]
-                if not folder_outputs:
-                    raise RuntimeError(f"Canonical conversion produced no outputs for inventoried inputs: {expected_inputs}")
-                conversion_outputs.extend(folder_outputs)
-            if not conversion_outputs:
-                raise RuntimeError("Canonical conversion returned without producing output files.")
-            event = StageEvent(stage_id="conversion", status="SUCCEEDED", message=f"Canonical CZI conversion completed for {len(czi_files)} inventoried input file(s) in {len(input_folders)} folder(s).", tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"results_by_input_folder": conversion_results}, artifacts=conversion_outputs)
-            emit(event)
-            stages.append(event)
-        segmentation_completed = 0
-        current_stage = "registration"
-        registration = request.parameters.get("registration")
-        registration_enabled = isinstance(registration, dict) and registration.get("enabled") is True
-        if not registration_enabled:
-            registration = None
-        if registration:
-            if not isinstance(registration, dict) or not registration.get("confirmed_grouping"):
-                message = "Registration requires user-confirmed filename grouping in parameters.registration.confirmed_grouping=true."
-                event = StageEvent(stage_id="registration", status="BLOCKED", message=message)
-                emit(event)
-                stages.append(event)
-                return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings + [message])
-            import re
-            from spatial_omics_toolkit.cycif import step03_register_rounds, step04_export_registered
+            results: dict[str, Any] = {}
+            for folder in sorted({path.parent for path in files}):
+                key = folder.relative_to(request.modality_dir).as_posix().replace("/", "__") or "root"
+                destination = request.run_dir / "cycif" / "converted" / key
+                destination.mkdir(parents=True, exist_ok=True)
+                record(StageEvent(stage_id=stage_id, status="RUNNING", message=f"Converting inventoried CZI files in {folder}."))
+                results[str(folder)] = step02_convert_raw_images(str(folder), str(destination), dispatch="inprocess", conversion_config=config, strict=True, verbose=False)
+                outputs = [str(path) for path in sorted(destination.rglob("*")) if path.is_file()]
+                if not outputs:
+                    raise RuntimeError(f"Canonical conversion produced no outputs for {folder}.")
+                artifacts.extend(outputs)
+            return finish("SUCCEEDED", f"Canonical CZI conversion completed for {len(files)} inventoried files.", {"results_by_input_folder": results})
+
+        if stage_id == "registration":
+            if not registration.get("confirmed_grouping"):
+                return finish("BLOCKED", "Registration requires user-confirmed filename grouping in parameters.registration.confirmed_grouping=true.")
+            from spatial_omics_toolkit.cycif import step03_register_rounds
 
             pattern = re.compile(str(request.parameters["intake"]["filename_pattern"]))
             grouped: dict[tuple[str, str], dict[str, str]] = {}
@@ -975,188 +775,124 @@ def _execute_raw(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 key = (str(match.group("slide")), str(match.group("scene")))
                 round_label = str(match.group("round"))
                 if round_label in grouped.setdefault(key, {}):
-                    message = f"Ambiguous duplicate CZI for slide={key[0]}, scene={key[1]}, round={round_label}."
-                    event = StageEvent(stage_id="registration", status="BLOCKED", message=message)
-                    emit(event)
-                    stages.append(event)
-                    return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings + [message])
+                    return finish("BLOCKED", f"Ambiguous duplicate CZI for slide={key[0]}, scene={key[1]}, round={round_label}.")
                 grouped[key][round_label] = str(path)
             if not grouped:
-                message = "No CZI files matched the user-configured filename pattern with named slide, scene, and round groups."
-                event = StageEvent(stage_id="registration", status="BLOCKED", message=message)
-                emit(event)
-                stages.append(event)
-                return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings + [message])
-            try:
-                marker_panel = _resolve_marker_panel(request.parameters)
-            except ValueError as exc:
-                marker_panel = None
-                warnings.append(str(exc))
-            marker_map = marker_panel["marker_map"] if marker_panel is not None else None
-            if marker_map is None:
-                message = "Export/segmentation requires a user-selected and explicitly confirmed marker_panel_metadata.csv with the required schema."
-                warnings.append(message)
+                return finish("BLOCKED", "No CZI files matched the configured slide, scene, and round pattern.")
+            handoffs: list[str] = []
             for (slide, scene), round_files in grouped.items():
                 label = f"{slide}_{scene}"
-                reg_dir = request.run_dir / "cycif" / "registered" / label
-                reg_dir.mkdir(parents=True, exist_ok=True)
-                emit(StageEvent(stage_id="registration", status="RUNNING", message=f"Registering {len(round_files)} configured rounds for {label}.", tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"slide": slide, "scene": scene, "rounds": sorted(round_files)}))
-                reg_result = step03_register_rounds(round_files, output_dir=str(reg_dir), verbose=False, **registration.get("config", {}))
-                round_results = reg_result.get("rounds", {})
-                bad_rounds = {name: info.get("status", "unregistered") for name, info in round_results.items() if not info.get("registered", False)}
-                if not bad_rounds:
-                    _write_registration_handoff(reg_result, label, reg_dir, int(registration.get("config", {}).get("dapi_channel", 0)))
-                reg_artifacts = [str(p) for p in reg_dir.rglob("*") if p.is_file()]
-                artifacts.extend(reg_artifacts)
-                reg_status = "FAILED" if bad_rounds else "SUCCEEDED"
-                reg_message = f"Registration transform failures preserved: {bad_rounds}" if bad_rounds else f"Registered scene {label}."
-                event = StageEvent(stage_id="registration", status=reg_status, message=reg_message, tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"slide": slide, "scene": scene, "round_status": {name: info.get("status") for name, info in round_results.items()}}, artifacts=reg_artifacts)
-                emit(event)
-                stages.append(event)
-                if bad_rounds:
-                    return WorkflowResult(status="FAILED", stages=stages, artifacts=artifacts, warnings=warnings + [reg_message])
-                if marker_map is None:
-                    message = "Registration succeeded, but export is blocked until a marker-panel CSV is selected and explicitly confirmed."
-                    event = StageEvent(stage_id="export", status="BLOCKED", message=message, parameters={"scene_label": label})
-                    emit(event)
-                    stages.append(event)
-                    continue
-                if set(marker_map) != set(round_files):
-                    message = f"Confirmed marker panel rounds {sorted(marker_map)} do not match scene {label} rounds {sorted(round_files)}; registration QC is retained but export is blocked."
-                    event = StageEvent(stage_id="export", status="BLOCKED", message=message, parameters={"scene_label": label, "marker_panel": marker_panel})
-                    emit(event)
-                    stages.append(event)
-                    warnings.append(message)
-                    continue
-                current_stage = "export"
-                export_dir = request.run_dir / "cycif" / "exported" / label
-                export_dir.mkdir(parents=True, exist_ok=True)
-                emit(StageEvent(stage_id="export", status="RUNNING", message=f"Exporting registered scene {label} with explicitly confirmed channel/marker mapping.", parameters={"slide": slide, "scene": scene, "marker_panel": marker_panel}))
-                export_result = step04_export_registered(
-                    reg_result,
-                    label,
-                    str(export_dir),
-                    marker_map=marker_map,
-                    write_pipex_channels=False,
-                    verbose=False,
-                    **registration.get("export_config", {}),
-                )
-                export_artifacts = [str(path) for path in export_dir.rglob("*") if path.is_file()]
-                if not export_artifacts:
-                    raise RuntimeError(f"step04_export_registered produced no artifacts for {label}: {export_result}")
-                artifacts.extend(export_artifacts)
-                export_event = StageEvent(stage_id="export", status="SUCCEEDED", message=f"Exported scene {label} with the confirmed marker/channel map.", tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"slide": slide, "scene": scene, "marker_map": marker_map}, artifacts=export_artifacts)
-                emit(export_event)
-                stages.append(export_event)
-                segmentation = request.parameters.get("segmentation")
-                if isinstance(segmentation, dict) and segmentation.get("enabled") is True and segmentation.get("backend") == "MCMICRO":
-                    current_stage = "segmentation"
-                    if not os.environ.get("SLURM_JOB_ID"):
-                        message = "MCMICRO execution is blocked outside an allocated SLURM worker."
-                        event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-                        emit(event)
-                        stages.append(event)
-                        return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings + [message])
-                    from spatial_omics_toolkit.cycif import MCMICROConfig, step05_segment_cells
+                destination = request.run_dir / "cycif" / "registered" / label
+                destination.mkdir(parents=True, exist_ok=True)
+                record(StageEvent(stage_id=stage_id, status="RUNNING", message=f"Registering {len(round_files)} rounds for {label}.", parameters={"slide": slide, "scene": scene, "rounds": sorted(round_files)}))
+                result = step03_register_rounds(round_files, output_dir=str(destination), verbose=False, **registration.get("config", {}))
+                rounds = result.get("rounds", {})
+                bad = {name: info.get("status", "unregistered") for name, info in rounds.items() if not info.get("registered", False)}
+                if not bad:
+                    handoffs.append(
+                        str(_write_registration_handoff(
+                            result, label, destination,
+                            int(registration.get("config", {}).get("dapi_channel", 0)),
+                        ))
+                    )
+                artifacts.extend(str(path) for path in destination.rglob("*") if path.is_file())
+                if bad:
+                    return finish("FAILED", f"Registration transform failures preserved: {bad}")
+            state["handoffs"] = handoffs
+            return finish("SUCCEEDED", f"Registered {len(handoffs)} scenes.")
 
-                    runtime = check.resolved_parameters["mcmicro_runtime"]
-                    version_process = subprocess.run([runtime["wrapper"], "-version"], check=True, capture_output=True, text=True, timeout=60)
-                    mcmicro_version = (version_process.stdout or version_process.stderr).strip() or "version command returned no output"
-                    config_values = segmentation.get("parameters", {})
-                    if not isinstance(config_values, dict):
-                        raise ValueError("segmentation.parameters must be an object of MCMICROConfig settings.")
-                    mcmicro_config = MCMICROConfig(mcmicro_bin=runtime["wrapper"], mcmicro_nf=str(Path(runtime["home"]) / "main.nf"), **config_values)
-                    project_dir = request.run_dir / "cycif" / "mcmicro" / label
-                    composite_path = export_result.get("composite_path")
-                    if not composite_path or not Path(str(composite_path)).is_file():
-                        raise RuntimeError(f"step04_export_registered did not return a usable composite OME-TIFF for MCMICRO scene {label}.")
-                    emit(StageEvent(stage_id="segmentation", status="RUNNING", message=f"Running the pinned MCMICRO backend for {label} inside the allocated SLURM worker.", tool_versions={"MCMICRO": mcmicro_version, "spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"backend": "MCMICRO", "segmenter": mcmicro_config.segmenter, "marker_panel": marker_panel, "config": config_values, "project_dir": str(project_dir)}))
-                    segmentation_result = step05_segment_cells("mcmicro", scene_label=label, composite_ometiff_path=str(composite_path), marker_map=marker_map, project_dir=str(project_dir), mcmicro_config=mcmicro_config, run=True, load_results=True, verbose=False)
-                    segmentation_artifacts = [str(p) for p in project_dir.rglob("*") if p.is_file()]
-                    if not segmentation_artifacts:
-                        raise RuntimeError(f"MCMICRO returned without run-scoped artifacts for {label}: {segmentation_result}")
-                    artifacts.extend(segmentation_artifacts)
-                    event = StageEvent(stage_id="segmentation", status="SUCCEEDED", message=f"MCMICRO {mcmicro_version} completed for {label}.", tool_versions={"MCMICRO": mcmicro_version, "spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]}, parameters={"backend": "MCMICRO", "segmenter": mcmicro_config.segmenter, "marker_panel": marker_panel, "result": str(segmentation_result)}, artifacts=segmentation_artifacts)
-                    emit(event)
-                    segmentation_completed += 1
-                    stages.append(event)
-        segmentation = request.parameters.get("segmentation")
-        if isinstance(segmentation, dict) and segmentation.get("enabled") is True and segmentation.get("backend") == "MCMICRO" and segmentation_completed == 0:
-            message = "MCMICRO was selected but no scene reached segmentation; registration, export, and a confirmed marker map are required."
-            event = StageEvent(stage_id="segmentation", status="BLOCKED", message=message)
-            emit(event)
-            stages.append(event)
-            return WorkflowResult(status="BLOCKED", stages=stages, artifacts=artifacts, warnings=warnings + [message])
-        final_status = "BLOCKED" if any(stage.status == "BLOCKED" for stage in stages) else ("WARNING" if warnings or any(stage.status == "WARNING" for stage in stages) else "SUCCEEDED")
-        return WorkflowResult(status=final_status, stages=stages, artifacts=artifacts, warnings=warnings)
+        if stage_id == "export":
+            from spatial_omics_toolkit.cycif import step04_export_registered
+
+            panel = _resolve_marker_panel(request.parameters, request.project_root)
+            if panel is None:
+                return finish("BLOCKED", "Registration succeeded, but export is blocked until a marker-panel CSV is selected and explicitly confirmed.")
+            marker_map = panel["marker_map"]
+            handoffs = upstream["registration"].state.get("handoffs", [])
+            if not handoffs:
+                return finish("BLOCKED", "Registration checkpoint has no durable per-scene registration handoff.")
+            composites: dict[str, str] = {}
+            for name in handoffs:
+                handoff = Path(name)
+                metadata = json.loads(handoff.read_text(encoding="utf-8"))
+                label = str(metadata["scene_label"])
+                result = _load_registration_handoff(handoff)
+                if set(marker_map) != set(result["round_order"]):
+                    return finish("BLOCKED", f"Confirmed marker panel rounds {sorted(marker_map)} do not match scene {label} rounds {sorted(result['round_order'])}; registration QC is retained.")
+                destination = request.run_dir / "cycif" / "exported" / label
+                destination.mkdir(parents=True, exist_ok=True)
+                record(StageEvent(stage_id=stage_id, status="RUNNING", message=f"Exporting registered scene {label}.", parameters={"marker_panel": panel}))
+                exported = step04_export_registered(result, label, str(destination), marker_map=marker_map, write_pipex_channels=False, verbose=False, **registration.get("export_config", {}))
+                outputs = [str(path) for path in destination.rglob("*") if path.is_file()]
+                if not outputs:
+                    raise RuntimeError(f"step04_export_registered produced no artifacts for {label}: {exported}")
+                artifacts.extend(outputs)
+                composite = exported.get("composite_path")
+                if composite:
+                    composites[label] = str(composite)
+            state.update({"composites": composites, "marker_map": marker_map})
+            return finish("SUCCEEDED", f"Exported {len(handoffs)} scenes with the confirmed marker map.", {"marker_panel": panel})
+
+        if segmentation.get("backend", "MCMICRO") != "MCMICRO":
+            return finish("BLOCKED", "The CyCIF app supports MCMICRO segmentation only.")
+        if not os.environ.get("SLURM_JOB_ID"):
+            return finish("BLOCKED", "MCMICRO execution is blocked outside an allocated SLURM worker.")
+        check = preflight(request)
+        if not check.ready:
+            return finish("BLOCKED", "MCMICRO preflight blocked: " + "; ".join(check.blockers))
+        from spatial_omics_toolkit.cycif import MCMICROConfig, step05_segment_cells
+
+        runtime = check.resolved_parameters["mcmicro_runtime"]
+        version = subprocess.run([runtime["wrapper"], "-version"], check=True, capture_output=True, text=True, timeout=60)
+        mcmicro_version = (version.stdout or version.stderr).strip() or "version command returned no output"
+        options = segmentation.get("parameters", {})
+        if not isinstance(options, dict):
+            raise ValueError("segmentation.parameters must be an object of MCMICROConfig settings.")
+        # The canonical default is the cluster-submitting exacloud profile.
+        # Nested execution must instead stay inside the current allocation.
+        if options.get("profile", "singularity") != "singularity" or options.get("extra_args"):
+            return finish("BLOCKED", "MCMICRO must use the allocation-local singularity profile without extra Nextflow arguments.")
+        if options.get("use_gpu") and not any(os.environ.get(key) for key in ("SLURM_GPUS", "SLURM_GPUS_ON_NODE", "SLURM_JOB_GPUS")):
+            return finish("BLOCKED", "MCMICRO GPU execution requires an allocated SLURM GPU.")
+        from spatial_omics_toolkit.application.nextflow import _allocated_resources
+
+        cpus, memory_gb = _allocated_resources(request)
+        memory_mb = max(1, memory_gb * 1024 - 1024)
+        config_path = request.run_dir / "cycif" / "mcmicro-local.config"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            "process.executor = 'local'\n"
+            f"executor.cpus = {cpus}\nexecutor.memory = '{memory_mb} MB'\nexecutor.queueSize = 1\n"
+            f"process.resourceLimits = [cpus: {cpus}, memory: '{memory_mb} MB']\n"
+            "process.maxForks = 1\n"
+            "process {\n  withName: 'segmentation:worker' {\n"
+            f"    cpus = {cpus}\n    memory = '{memory_mb} MB'\n"
+            "  }\n}\n",
+            encoding="utf-8",
+        )
+        options = {**options, "profile": "singularity", "extra_args": f"-c {shlex.quote(str(config_path))}"}
+        config = MCMICROConfig(mcmicro_bin=runtime["wrapper"], mcmicro_nf=str(Path(runtime["home"]) / "main.nf"), **options)
+        exported_state = upstream["export"].state
+        composites = exported_state.get("composites", {})
+        marker_map = exported_state.get("marker_map")
+        if not composites or not marker_map:
+            return finish("BLOCKED", "MCMICRO requires exported composites and a confirmed marker map.")
+        for label, composite in composites.items():
+            if not Path(composite).is_file():
+                raise RuntimeError(f"No usable composite OME-TIFF for MCMICRO scene {label}.")
+            project_dir = request.run_dir / "cycif" / "mcmicro" / label
+            record(StageEvent(stage_id=stage_id, status="RUNNING", message=f"Running MCMICRO for {label} in the allocated worker.", tool_versions={"MCMICRO": mcmicro_version}, parameters={"project_dir": str(project_dir), "composite_path": composite}))
+            result = step05_segment_cells("mcmicro", scene_label=label, composite_ometiff_path=composite, marker_map=marker_map, project_dir=str(project_dir), mcmicro_config=config, run=True, load_results=True, verbose=False)
+            outputs = [str(path) for path in project_dir.rglob("*") if path.is_file()]
+            if not outputs:
+                raise RuntimeError(f"MCMICRO returned without run-scoped artifacts for {label}: {result}")
+            artifacts.extend(outputs)
+        return finish("SUCCEEDED", f"MCMICRO {mcmicro_version} completed for {len(composites)} scenes.", {"backend": "MCMICRO", "segmenter": config.segmenter, "version": mcmicro_version})
+    except ValueError as exc:
+        return finish("BLOCKED", f"{stage_id} stage blocked: {exc}")
     except Exception as exc:
-        event = StageEvent(stage_id=current_stage, status="FAILED", message=f"{current_stage} stage failed: {type(exc).__name__}: {exc}", tool_versions={"spatial_omics_toolkit": check.resolved_parameters["toolkit_version"]})
-        emit(event)
-        stages.append(event)
-        return WorkflowResult(status="FAILED", stages=stages, artifacts=artifacts, warnings=warnings + [event.message])
+        return finish("FAILED", f"{stage_id} stage failed: {type(exc).__name__}: {exc}")
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    """Run raw or verified-checkpoint continuation and persist receipts."""
-    selection = request.parameters.get("continuation", {})
-    if isinstance(selection, dict) and selection.get("mode") == "continue":
-        start_stage = selection.get("start_stage")
-        try:
-            if start_stage in {"conversion", "registration"}:
-                if start_stage == "conversion" and not (isinstance(request.parameters.get("conversion"), dict) and request.parameters["conversion"].get("enabled") is True):
-                    raise ValueError("Conversion continuation requires conversion.enabled=true.")
-                if start_stage == "registration" and not (isinstance(request.parameters.get("registration"), dict) and request.parameters["registration"].get("enabled") is True):
-                    raise ValueError("Registration continuation requires registration.enabled=true.")
-            elif start_stage not in {"export", "segmentation"}:
-                raise ValueError(f"Unsupported continuation boundary: {start_stage!r}.")
-            if start_stage in {"export", "segmentation"}:
-                _resolve_marker_panel(request.parameters)
-        except ValueError as exc:
-            event = StageEvent(stage_id=str(start_stage or "intake"), status="BLOCKED", message=f"Cannot execute selected continuation: {exc}")
-            emit(event)
-            return WorkflowResult(status="BLOCKED", stages=[event], warnings=[event.message])
-        reasons, reused = validate_continuation(request)
-        if reasons:
-            message = "CyCIF continuation blocked: " + "; ".join(reasons)
-            event = StageEvent(stage_id=str(start_stage), status="BLOCKED", message=message)
-            emit(event)
-            return WorkflowResult(status="BLOCKED", stages=[event], warnings=[message])
-        if start_stage in {"export", "segmentation"}:
-            if start_stage == "export":
-                return _execute_export_resume(request, emit, reused)
-            return _execute_segmentation_resume(request, emit, reused)
-        request.parameters["_reused_checkpoints"] = reused
-        observed: list[StageEvent] = []
-        def record(event: StageEvent) -> None:
-            observed.append(event)
-            emit(event)
-        result = _execute_raw(request, record)
-        source = Path(selection["parent_run_dir"]).expanduser().resolve()
-        source_receipt = json.loads((source / "checkpoint_receipts.json").read_text(encoding="utf-8"))
-        source_checkpoint = source_receipt["checkpoints"]["intake"]
-        parent_metadata = json.loads((source / "run.json").read_text(encoding="utf-8"))
-        from spatial_omics_toolkit.application.runs import atomic_json
-        warning_stage_ids = sorted({item["stage_id"] for item in reused if item.get("source_status") == "WARNING"})
-        atomic_json(request.run_dir / "resume_receipt.json", {
-            "parent_run_id": parent_metadata.get("run_id"), "parent_run_path": str(source),
-            "start_stage": start_stage, "raw_input_fingerprint": _input_fingerprint(request.run_dir),
-            "reused_checkpoints": reused, "warning_review_confirmed": selection.get("warning_review_confirmed") is True,
-            "warning_stage_ids": warning_stage_ids,
-            "warning_review_recorded_at_utc": datetime.now(timezone.utc).isoformat() if warning_stage_ids else None,
-        })
-        _write_checkpoint_receipts(request, observed)
-        receipt_path = request.run_dir / "checkpoint_receipts.json"
-        child_receipts = json.loads(receipt_path.read_text(encoding="utf-8")) if receipt_path.exists() else {"workflow_id": request.workflow_id, "checkpoints": {}}
-        child_receipts.setdefault("checkpoints", {})["intake"] = source_checkpoint
-        atomic_json(receipt_path, child_receipts)
-        return result
-    observed: list[StageEvent] = []
-    def record(event: StageEvent) -> None:
-        observed.append(event)
-        emit(event)
-    result = _execute_raw(request, record)
-    try:
-        _write_checkpoint_receipts(request, observed)
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    return result
+
+

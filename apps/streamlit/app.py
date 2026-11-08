@@ -22,6 +22,8 @@ from spatial_omics_toolkit.application.intake import (
     read_project_samples,
 )
 from spatial_omics_toolkit.application.service import prepare_request, submit_request
+from spatial_omics_toolkit.application.settings import resource_fields, settings_input_fingerprint
+from spatial_omics_toolkit.application.ui.settings import render_settings
 from spatial_omics_toolkit.application.workflows.registry import list_workflows
 
 
@@ -50,6 +52,40 @@ def _persist_widget_state(widget_key: str, state_key: str) -> None:
 def _set_modality_section(modality: str, section: str) -> None:
     st.session_state[f"workspace_section_state_{modality}"] = section
     st.session_state[f"workspace_section_{modality}"] = section
+
+
+def _parameter_key_prefix(workflow_id: str) -> str:
+    generation = int(st.session_state.get(f"workflow_parameter_generation_{workflow_id}", 0))
+    base = f"{confirmation_key(workflow_id)}_"
+    return f"{base}profile_{generation}_" if generation else base
+
+
+def _apply_pending_settings(descriptor: WorkflowDescriptor) -> None:
+    pending = st.session_state.pop(f"pending_workflow_settings_{descriptor.workflow_id}", None)
+    if not isinstance(pending, dict):
+        return
+    project_root = Path(str(st.session_state.get("project_root_path", ""))).expanduser()
+    for field in descriptor.parameter_fields:
+        value = _get_nested(pending, field.name)
+        if field.kind == "config_file" and isinstance(value, str) and value.strip():
+            path = Path(value).expanduser()
+            _set_nested(pending, field.name, str((path if path.is_absolute() else project_root / path).resolve()))
+    st.session_state[f"workflow_parameters_{descriptor.workflow_id}"] = pending
+    st.session_state[f"workflow_parameters_valid_{descriptor.workflow_id}"] = False
+    st.session_state.pop(f"preflight_{descriptor.modality}", None)
+    st.session_state.pop(f"mapped_preflight_{descriptor.modality}", None)
+    prefix = _parameter_key_prefix(descriptor.workflow_id)
+    for field in [*descriptor.parameter_fields, *resource_fields()]:
+        st.session_state.pop(f"{prefix}parameter_{confirmation_key(descriptor.workflow_id, field.name)}", None)
+    generation_key = f"workflow_parameter_generation_{descriptor.workflow_id}"
+    st.session_state[generation_key] = int(st.session_state.get(generation_key, 0)) + 1
+    if descriptor.workflow_id == "cycif-raw-czi":
+        panel_path = str(_get_nested(pending, "registration.marker_panel_csv") or "")
+        st.session_state["cycif_panel_csv"] = panel_path
+        st.session_state["cycif_panel_csv_state"] = panel_path
+        for key in tuple(st.session_state):
+            if key.startswith(("cycif_grouping_confirmed_", "cycif_panel_confirmed_")):
+                st.session_state.pop(key, None)
 
 
 def _submit_example_from_ui(modality: str) -> None:
@@ -232,12 +268,15 @@ def confirmation_key(*parts: str) -> str:
     return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _signature_parameters(parameters: dict[str, Any]) -> str:
+def _signature_parameters(descriptor: WorkflowDescriptor, parameters: dict[str, Any]) -> str:
     snapshot = copy.deepcopy(parameters)
     core_map = snapshot.get("tma_core_map")
     if isinstance(core_map, dict) and core_map.get("path"):
         _, current_hash, errors = read_tma_core_map(str(core_map["path"]))
         core_map["current_file_sha256"] = current_hash if not errors else "unavailable"
+    snapshot["_settings_source_fingerprint"] = settings_input_fingerprint(
+        descriptor, parameters, Path(str(st.session_state.get("project_root_path", ""))).expanduser(),
+    )
     return json.dumps(snapshot, sort_keys=True, default=str)
 
 
@@ -542,11 +581,7 @@ def render_parameter_fields(
     parameters: dict[str, Any] = {}
     errors: list[str] = []
     grouped: dict[tuple[str, bool], list[ParameterField]] = {}
-    core_fields = [
-        ParameterField(name="resources.cpus", label="SLURM job CPUs", kind="int", required=True, default=1, min_value=1, max_value=32, step=1, unit="cores", section="SLURM job resources", help_text="CPU allocation for the single Python workflow job.", advanced=True),
-        ParameterField(name="resources.memory_gb", label="SLURM job memory", kind="int", required=True, default=8, min_value=1, max_value=512, unit="GiB", section="SLURM job resources", help_text="Memory allocation for the Python workflow job. Choose within your cluster allocation policy.", advanced=True),
-        ParameterField(name="resources.time_limit", label="SLURM job wall time", kind="select", required=True, default="72h", choices=["8h", "24h", "48h", "72h", "168h"], unit="wall time", section="SLURM job resources", help_text="Maximum runtime for the analysis job.", advanced=True),
-    ]
+    core_fields = resource_fields()
     effective_fields = list(fields if fields is not None else descriptor.parameter_fields)
     existing_names = {field.name for field in effective_fields}
     effective_fields.extend(field for field in core_fields if field.name not in existing_names)
@@ -1052,6 +1087,13 @@ def _reviewed_preflight_changed(
         current_resolved.get("annotation_csv_sha256") != original_resolved.get("annotation_csv_sha256")
     ):
         return "Project sample metadata changed after checks. Run checks again and review the new mapping."
+    original_profile = original_resolved.get("_settings_profile")
+    current_profile = current_resolved.get("_settings_profile")
+    if isinstance(original_profile, dict) or isinstance(current_profile, dict):
+        if not isinstance(original_profile, dict) or not isinstance(current_profile, dict):
+            return "The settings file changed after checks. Apply it and run checks again."
+        if any(original_profile.get(key) != current_profile.get(key) for key in ("source_sha256", "effective_sha256", "config_files")):
+            return "The settings file or effective settings changed after checks. Apply it and run checks again."
     original_groups = _acquisition_contract(original_result)
     current_groups = _acquisition_contract(current_result)
     if original_groups is None or current_groups is None or original_groups != current_groups:
@@ -1245,17 +1287,20 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
             st.session_state[workflow_state_key] = title
         descriptor = descriptors[titles.index(title)]
 
+    if not read_only and mode == "own":
+        _apply_pending_settings(descriptor)
+
     # Compact summary banner at top of modality workbench
     render_modality_banner(modality, descriptor)
 
-    # Horizontal section navigation bar on main canvas (Action-first default: "Setup")
+    # Keep the existing section bar; new workspaces open on Introduction.
     if read_only:
         section = "Introduction"
     else:
         section_key = f"workspace_section_{modality}"
         section_state_key = f"workspace_section_state_{modality}"
         if section_key not in st.session_state:
-            st.session_state[section_key] = str(st.session_state.get(section_state_key, "Setup"))
+            st.session_state[section_key] = str(st.session_state.get(section_state_key, "Introduction"))
         section = st.radio(
             "Workflow",
             ["Introduction", "Setup", "Run", "Quality control", "Results", "Files"],
@@ -1482,6 +1527,15 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
         with col_params:
             with st.container(border=True, key=f"own_params_pane_{modality}"):
                 st.markdown('<div class="wb-pane-header"><p class="wb-pane-title">Workflow parameters & stage configuration</p></div>', unsafe_allow_html=True)
+                applied_settings = render_settings(
+                    descriptor,
+                    Path(str(st.session_state.get("project_root_path", ""))).expanduser(),
+                    previous,
+                    key_prefix=f"settings_{confirmation_key(descriptor.workflow_id)}",
+                )
+                if applied_settings is not None:
+                    st.session_state[f"pending_workflow_settings_{descriptor.workflow_id}"] = applied_settings
+                    st.rerun()
                 preflight_state = st.session_state.get(f"preflight_{modality}")
                 discovered: dict[str, Any] = {}
                 if isinstance(preflight_state, tuple) and len(preflight_state) == 3:
@@ -1515,7 +1569,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
                     parameter_fields = [field for field in parameter_fields if field.stage_id == selected_stage]
                 parameters, errors = render_parameter_fields(
                     descriptor, discovered, fields=parameter_fields, initial=previous,
-                    key_prefix=f"{confirmation_key(descriptor.workflow_id)}_",
+                    key_prefix=_parameter_key_prefix(descriptor.workflow_id),
                     show_errors=False,
                 )
                 errors.extend(panel_errors)
@@ -1696,7 +1750,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
                             signature = confirmation_key(
                                 descriptor.workflow_id, modality, str(st.session_state.get("project_root_path", "")),
                                 str(st.session_state.get("annotation_csv", "")), str(st.session_state.get(path_key, "")),
-                                str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(parameters),
+                                str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(descriptor, parameters),
                             )
                             st.session_state[f"preflight_{modality}"] = (
                                 request.model_dump(mode="json"), result.model_dump(mode="json"), signature,
@@ -1708,7 +1762,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
                 signature = confirmation_key(
                     descriptor.workflow_id, modality, str(st.session_state.get("project_root_path", "")),
                     str(st.session_state.get("annotation_csv", "")), str(st.session_state.get(path_key, "")),
-                    str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(parameters),
+                    str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(descriptor, parameters),
                 )
                 can_submit = False
                 request_data: dict[str, Any] = {}

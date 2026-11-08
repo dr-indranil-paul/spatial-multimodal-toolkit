@@ -23,6 +23,8 @@ dependencies = [
     "scipy>=1.10.0",
     "scikit-learn>=1.2",
     "matplotlib>=3.7.0",
+    "tomli>=2.0; python_version < '3.11'",
+    "pyarrow>=12.0.0",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +38,6 @@ scientific = [
     "anndata>=0.9.0",
     "spatialdata>=0.1.0",
     "scanpy>=1.9.0",
-    "pyarrow>=12.0.0",
 ]
 visium = [
     "spatialdata-io==0.6.0",

@@ -58,25 +58,46 @@ def describe() -> WorkflowDescriptor:
         ),
         stages=[
             StageDefinition(
-                stage_id="serial-section-alignment",
-                title="Image previews and alignment quality checks",
-                purpose=(
-                    "Read the original image geometry and physical scale, reduce the images to at most 512 pixels per "
-                    "dimension, run translation-only registration, and save overlays and metrics for review."
-                ),
-                tools=[
-                    ToolReference(name="aicspylibczi", version=_version("aicspylibczi"), role="CZI image and metadata reader"),
-                    ToolReference(name="scikit-image", version=_version("scikit-image"), role="Rescale and register images"),
-                    ToolReference(name="Matplotlib", version=_version("matplotlib"), role="Create quality-check figures (PDF and size-limited PNG preview)"),
-                ],
-                implementations=[
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_native_metadata", role="Read the selected CZI geometry and scale"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_read_bounded", role="Read source images within the size limit"),
-                    FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="register_he_to_fluorescence", role="Register images using translation only"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="execute", role="Create previews, overlays, and quality metrics"),
-                ],
+                stage_id="authorization", title="Source and channel authorization",
+                purpose="Validate explicit candidate sources, channel selection and technical-QC authorization.",
+                tools=[ToolReference(name="Spatial toolkit preflight", version="internal", role="Validate source and authorization parameters")],
+                implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="preflight", role="Check source paths and authorization")],
+                depends_on=[], condition="Explicit candidate sources and channel are authorized.",
+                inputs=["Selected CZI paths", "Candidate confirmation and channel selection"], outputs=["Validated source parameters"],
+            ),
+            StageDefinition(
+                stage_id="metadata-scale", title="Metadata and physical scale",
+                purpose="Read native geometry and validate channel identity and physical pixel scale.",
+                tools=[ToolReference(name="aicspylibczi", version=_version("aicspylibczi"), role="Read CZI metadata")],
+                implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_native_metadata", role="Read CZI geometry and scale")],
+                depends_on=["authorization"], condition="Authorization passed.",
+                inputs=["Validated source parameters", "CZI metadata"], outputs=["Validated native metadata"],
+            ),
+            StageDefinition(
+                stage_id="bounded-previews", title="Bounded previews",
+                purpose="Read bounded source planes and compose the physical-scale reference canvas.",
+                tools=[ToolReference(name="aicspylibczi", version=_version("aicspylibczi"), role="Read bounded CZI planes"), ToolReference(name="scikit-image", version=_version("scikit-image"), role="Sample onto reference grid")],
+                implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_read_bounded", role="Read source images within the size limit"), FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="_physical_he_canvas", role="Compose physical-scale canvas")],
+                depends_on=["metadata-scale"], condition="Channel and physical scale validated.",
+                inputs=["Validated native metadata", "CZI source planes"], outputs=["Bounded source previews", "Reference-grid canvas", "Source inventory"],
+            ),
+            StageDefinition(
+                stage_id="translation-registration", title="Translation-only registration",
+                purpose="Estimate the exploratory translation on bounded reference-grid images.",
+                tools=[ToolReference(name="scikit-image", version=_version("scikit-image"), role="Translation registration")],
+                implementations=[FunctionReference(source_file="spatial_omics_toolkit/cycif/register.py", function_name="register_he_to_fluorescence", role="Register images using translation only")],
+                depends_on=["bounded-previews"], condition="Bounded previews are available.",
+                inputs=["Reference-grid canvas", "Bounded reference plane"], outputs=["Translation and warped image"],
+            ),
+            StageDefinition(
+                stage_id="review", title="Metrics and human review",
+                purpose="Save overlays and descriptive metrics for visual review; do not accept alignment automatically.",
+                tools=[ToolReference(name="Matplotlib", version=_version("matplotlib"), role="Create review figures")],
+                implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/integration.py", function_name="execute_stage", role="Generate review outputs")],
+                depends_on=["translation-registration"], condition="Registration completed; human review is required.",
+                inputs=["Translation and warped image", "Bounded previews and source inventory"], outputs=["Overlay PDF and PNG", "Alignment QC report"],
                 event_stage_ids=["workflow_output"],
-            )
+            ),
         ],
         input_description=(
             "- Select existing moving H&E and reference fluorescence or hyperspectral `.czi` "
@@ -108,13 +129,13 @@ def describe() -> WorkflowDescriptor:
             "does not establish same-cell registration or biological identity."
         ),
         parameter_fields=[
-            ParameterField(name="moving_he_path", label="Moving H&E CZI", kind="path", required=True, section="Sources", stage_id="serial-section-alignment", help_text="Exact H&E CZI path; must be explicitly supplied."),
-            ParameterField(name="reference_fluorescence_path", label="Reference fluorescence/HS CZI", kind="path", required=True, section="Sources", stage_id="serial-section-alignment", help_text="Exact reference CZI path; must be explicitly supplied."),
-            ParameterField(name="linkage", label="Section relationship", kind="select", required=True, default="serial_section_candidate", choices=["serial_section_candidate"], section="Review", stage_id="serial-section-alignment", help_text="A candidate adjacent-section relationship only; this does not confirm biological pairing."),
-            ParameterField(name="candidate_sources_confirmed", label="I confirm these are the two candidate source images to compare", kind="bool", required=True, default=False, section="Review", stage_id="serial-section-alignment", review_required=True, help_text="Explicitly authorizes these selected sources for exploratory technical QC as a serial-section candidate; it does not confirm biological pairing or accepted alignment."),
-            ParameterField(name="reference_channel_index", label="Reference channel index (C)", kind="int", required=True, section="Reference image", stage_id="serial-section-alignment", help_text="Choose the fluorescence/HS channel from the source metadata. Channel identity is never inferred."),
-            ParameterField(name="reference_channel_name", label="Reference channel name confirmation", kind="text", required=True, section="Reference image", stage_id="serial-section-alignment", help_text="Enter the metadata channel name corresponding to the chosen index; it must match source metadata exactly."),
-            ParameterField(name="search_radius", label="Translation search radius", kind="int", default=16, min_value=1, max_value=64, unit="reference preview pixels", section="Registration", stage_id="serial-section-alignment", help_text="Search extent for translation-only alignment, measured in pixels of the reduced reference image."),
+            ParameterField(name="moving_he_path", label="Moving H&E CZI", kind="path", required=True, section="Sources", stage_id="authorization", help_text="Exact H&E CZI path; must be explicitly supplied."),
+            ParameterField(name="reference_fluorescence_path", label="Reference fluorescence/HS CZI", kind="path", required=True, section="Sources", stage_id="authorization", help_text="Exact reference CZI path; must be explicitly supplied."),
+            ParameterField(name="linkage", label="Section relationship", kind="select", required=True, default="serial_section_candidate", choices=["serial_section_candidate"], section="Review", stage_id="authorization", help_text="A candidate adjacent-section relationship only; this does not confirm biological pairing."),
+            ParameterField(name="candidate_sources_confirmed", label="I confirm these are the two candidate source images to compare", kind="bool", required=True, default=False, section="Review", stage_id="authorization", review_required=True, help_text="Explicitly authorizes these selected sources for exploratory technical QC as a serial-section candidate; it does not confirm biological pairing or accepted alignment."),
+            ParameterField(name="reference_channel_index", label="Reference channel index (C)", kind="int", required=True, section="Reference image", stage_id="authorization", help_text="Choose the fluorescence/HS channel from the source metadata. Channel identity is never inferred."),
+            ParameterField(name="reference_channel_name", label="Reference channel name confirmation", kind="text", required=True, section="Reference image", stage_id="authorization", help_text="Enter the metadata channel name corresponding to the chosen index; it must match source metadata exactly."),
+            ParameterField(name="search_radius", label="Translation search radius", kind="int", default=16, min_value=1, max_value=64, unit="reference preview pixels", section="Registration", stage_id="translation-registration", help_text="Search extent for translation-only alignment, measured in pixels of the reduced reference image."),
         ],
         limitations=[
             "This exploratory serial-section alignment uses translation only; it does not model deformation or establish same-cell registration or biological identity.",
@@ -373,165 +394,197 @@ def _save_source_preview(array: np.ndarray, destination: Path) -> None:
         Image.fromarray(display, mode="L").save(destination)
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    check = preflight(request)
-    stage_id = "serial-section-alignment"
-    if not check.ready:
-        event = StageEvent(stage_id=stage_id, status="BLOCKED", message="Integration preflight blocked.", parameters=check.resolved_parameters)
+def execute_stage(request: RunRequest, stage_id: str, upstream: dict[str, WorkflowResult], emit: WorkflowEmitter) -> WorkflowResult:
+    dependencies = {stage.stage_id: stage.depends_on for stage in describe().stages}
+    if stage_id not in dependencies:
+        raise ValueError(f"Unknown integration stage: {stage_id}")
+    for dependency in dependencies[stage_id]:
+        result = upstream.get(dependency)
+        if result is None or result.status not in {"SUCCEEDED", "REUSED", "WARNING"}:
+            event = StageEvent(stage_id=stage_id, status="BLOCKED", message=f"Required stage {dependency} did not complete successfully.")
+            emit(event)
+            return WorkflowResult(status="BLOCKED", stages=[event], warnings=[event.message])
+    if stage_id == "authorization":
+        check = preflight(request)
+        status = "SUCCEEDED" if check.ready else "BLOCKED"
+        event = StageEvent(stage_id=stage_id, status=status, message="Source authorization passed." if check.ready else "Integration preflight blocked.", parameters=check.resolved_parameters)
         emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=check.blockers)
+        return WorkflowResult(status=status, stages=[event], warnings=check.warnings if check.ready else check.blockers, state={"params": check.resolved_parameters} if check.ready else {})
 
-    request.run_dir.mkdir(parents=True, exist_ok=True)
+    state = dict(upstream[dependencies[stage_id][0]].state)
+    params = state["params"]
     output_dir = request.run_dir / "integration_serial_section_alignment"
     output_dir.mkdir(parents=True, exist_ok=True)
-    params = check.resolved_parameters
-    emit(StageEvent(stage_id=stage_id, status="RUNNING", message="Reading explicit CZI sources and native physical geometry; no source files are modified.", parameters=params))
+    emit(StageEvent(stage_id=stage_id, status="RUNNING", message=f"Running integration stage {stage_id}.", parameters=params))
     try:
-        he_path = Path(params["moving_he_path"])
-        fluor_path = Path(params["reference_fluorescence_path"])
-        he_meta = _native_metadata(he_path)
-        fluor_meta = _native_metadata(fluor_path)
-        if he_meta["pixel_type"] != "bgr24":
-            raise ValueError(f"H&E source must be a native BGR24 CZI preview, got {he_meta['pixel_type']}.")
-        if fluor_meta["channels"][params["reference_channel_index"]] != params["reference_channel_name"]:
-            raise ValueError(
-                "Chosen reference channel name does not exactly match CZI metadata at the selected index: "
-                f"C={params['reference_channel_index']} metadata={fluor_meta['channels']}"
-            )
-        for label, metadata in (("H&E", he_meta), ("reference", fluor_meta)):
-            if set(metadata["pixel_size_um"]) != {"X", "Y"}:
-                raise ValueError(f"{label} CZI requires physical X and Y pixel-size metadata; found {metadata['pixel_size_um']}.")
-            x_um, y_um = metadata["pixel_size_um"]["X"], metadata["pixel_size_um"]["Y"]
-            if not math.isclose(x_um, y_um, rel_tol=0.01):
-                raise ValueError(f"{label} CZI has anisotropic physical pixel size ({x_um}, {y_um}) um; scalar registration scale is not justified.")
-        he, he_downsample, he_axes = _read_bounded(he_path, he_meta, channel=None)
-        fluor, fluor_downsample, fluor_axes = _read_bounded(fluor_path, fluor_meta, channel=params["reference_channel_index"])
-        he_pitch = (he_meta["pixel_size_um"]["X"] + he_meta["pixel_size_um"]["Y"]) / 2
-        fluor_pitch = (fluor_meta["pixel_size_um"]["X"] + fluor_meta["pixel_size_um"]["Y"]) / 2
-        # Convert source-pixel pitch to the actual bounded-preview pixel pitch before registration.
-        he_scale_to_fluor = (he_pitch / he_downsample) / (fluor_pitch / fluor_downsample)
-        if not math.isfinite(he_scale_to_fluor) or he_scale_to_fluor <= 0:
-            raise ValueError(f"Computed non-positive/non-finite preview scale relation: {he_scale_to_fluor}.")
-        he_fov_reference_px = {
-            "width": he.shape[1] * he_scale_to_fluor,
-            "height": he.shape[0] * he_scale_to_fluor,
-        }
-        fov_composition = {
-            "he_preview_field_of_view_in_reference_pixels": he_fov_reference_px,
-            "reference_preview_field_of_view_pixels": {"width": fluor.shape[1], "height": fluor.shape[0]},
-            "he_fov_cropped_at_right_or_bottom_px": {
-                "width": max(0.0, he_fov_reference_px["width"] - fluor.shape[1]),
-                "height": max(0.0, he_fov_reference_px["height"] - fluor.shape[0]),
-            },
-            "reference_canvas_padding_at_right_or_bottom_px": {
-                "width": max(0.0, fluor.shape[1] - he_fov_reference_px["width"]),
-                "height": max(0.0, fluor.shape[0] - he_fov_reference_px["height"]),
-            },
-            "method": "Direct inverse-affine sampling from bounded H&E preview into bounded reference grid; no oversized scaled intermediate is allocated.",
-        }
+        if stage_id == "metadata-scale":
+            he_path = Path(params["moving_he_path"])
+            fluor_path = Path(params["reference_fluorescence_path"])
+            he_meta = _native_metadata(he_path)
+            fluor_meta = _native_metadata(fluor_path)
+            if he_meta["pixel_type"] != "bgr24":
+                raise ValueError(f"H&E source must be a native BGR24 CZI preview, got {he_meta['pixel_type']}.")
+            if fluor_meta["channels"][params["reference_channel_index"]] != params["reference_channel_name"]:
+                raise ValueError(
+                    "Chosen reference channel name does not exactly match CZI metadata at the selected index: "
+                    f"C={params['reference_channel_index']} metadata={fluor_meta['channels']}"
+                )
+            for label, metadata in (("H&E", he_meta), ("reference", fluor_meta)):
+                if set(metadata["pixel_size_um"]) != {"X", "Y"}:
+                    raise ValueError(f"{label} CZI requires physical X and Y pixel-size metadata; found {metadata['pixel_size_um']}.")
+                x_um, y_um = metadata["pixel_size_um"]["X"], metadata["pixel_size_um"]["Y"]
+                if not math.isclose(x_um, y_um, rel_tol=0.01):
+                    raise ValueError(f"{label} CZI has anisotropic physical pixel size ({x_um}, {y_um}) um; scalar registration scale is not justified.")
+            metadata_path = output_dir / "native_metadata.json"
+            metadata_path.write_text(json.dumps({"he": he_meta, "fluor": fluor_meta}, indent=2) + "\n", encoding="utf-8")
+            state["metadata_path"] = str(metadata_path)
+            artifacts = [str(metadata_path)]
+        elif stage_id == "bounded-previews":
+            metadata = json.loads(Path(state["metadata_path"]).read_text(encoding="utf-8"))
+            he_meta, fluor_meta = metadata["he"], metadata["fluor"]
+            he_path, fluor_path = Path(params["moving_he_path"]), Path(params["reference_fluorescence_path"])
+            he, he_downsample, he_axes = _read_bounded(he_path, he_meta, channel=None)
+            fluor, fluor_downsample, fluor_axes = _read_bounded(fluor_path, fluor_meta, channel=params["reference_channel_index"])
+            he_pitch = (he_meta["pixel_size_um"]["X"] + he_meta["pixel_size_um"]["Y"]) / 2
+            fluor_pitch = (fluor_meta["pixel_size_um"]["X"] + fluor_meta["pixel_size_um"]["Y"]) / 2
+            # Convert source-pixel pitch to the actual bounded-preview pixel pitch before registration.
+            he_scale_to_fluor = (he_pitch / he_downsample) / (fluor_pitch / fluor_downsample)
+            if not math.isfinite(he_scale_to_fluor) or he_scale_to_fluor <= 0:
+                raise ValueError(f"Computed non-positive/non-finite preview scale relation: {he_scale_to_fluor}.")
+            he_fov_reference_px = {
+                "width": he.shape[1] * he_scale_to_fluor,
+                "height": he.shape[0] * he_scale_to_fluor,
+            }
+            fov_composition = {
+                "he_preview_field_of_view_in_reference_pixels": he_fov_reference_px,
+                "reference_preview_field_of_view_pixels": {"width": fluor.shape[1], "height": fluor.shape[0]},
+                "he_fov_cropped_at_right_or_bottom_px": {
+                    "width": max(0.0, he_fov_reference_px["width"] - fluor.shape[1]),
+                    "height": max(0.0, he_fov_reference_px["height"] - fluor.shape[0]),
+                },
+                "reference_canvas_padding_at_right_or_bottom_px": {
+                    "width": max(0.0, fluor.shape[1] - he_fov_reference_px["width"]),
+                    "height": max(0.0, fluor.shape[0] - he_fov_reference_px["height"]),
+                },
+                "method": "Direct inverse-affine sampling from bounded H&E preview into bounded reference grid; no oversized scaled intermediate is allocated.",
+            }
+            he_canvas = _physical_he_canvas(he, fluor.shape, he_scale_to_fluor)
+            source_inventory = {
+                "workflow_id": _WORKFLOW_ID,
+                "linkage": params["linkage"],
+                "candidate_sources_confirmed": params["candidate_sources_confirmed"],
+                "acquisition_group_mapping": "UNMAPPED",
+                "moving_he": {**he_meta, "bounded_preview_shape_yxc": list(he.shape), "reader_axes": he_axes, "preview_scale_factor": he_downsample, "reference_grid_canvas_shape_yxc": list(he_canvas.shape)},
+                "reference_fluorescence": {**fluor_meta, "selected_channel_index": params["reference_channel_index"], "selected_channel_name": params["reference_channel_name"], "bounded_preview_shape_yx": list(fluor.shape), "reader_axes": fluor_axes, "preview_scale_factor": fluor_downsample},
+                "scale_relation": {
+                    "he_to_fluor_preview_pixel_resolution": he_scale_to_fluor,
+                    "formula": "(H&E native um/px / H&E preview factor) / (reference native um/px / reference preview factor)",
+                    "orientation": "native CZI X/Y axes as returned by the CZI reader; no rotations/reflections are inferred",
+                    "reference_fov_composition": fov_composition,
+                    "transform_coordinates": "translation in bounded reference preview pixels after direct metadata-scale sampling onto the reference canvas",
+                },
+            }
+            inventory_path = output_dir / "source_inventory_and_native_metadata.json"
+            inventory_path.write_text(json.dumps(source_inventory, indent=2, default=str) + "\n", encoding="utf-8")
+            he_preview_path = output_dir / "moving_he_source_preview.png"
+            fluor_preview_path = output_dir / "reference_channel_source_preview.png"
+            _save_source_preview(he, he_preview_path)
+            _save_source_preview(fluor, fluor_preview_path)
+            arrays_path = output_dir / "bounded_arrays.npz"
+            np.savez(arrays_path, he_canvas=he_canvas, fluor=fluor)
+            state.update({"arrays_path": str(arrays_path), "inventory_path": str(inventory_path), "he_preview_path": str(he_preview_path), "fluor_preview_path": str(fluor_preview_path), "he_scale_to_fluor": he_scale_to_fluor, "fluor_downsample": fluor_downsample, "fov_composition": fov_composition})
+            artifacts = [str(inventory_path), str(he_preview_path), str(fluor_preview_path)]
+        elif stage_id == "translation-registration":
+            from spatial_omics_toolkit.cycif.register import register_he_to_fluorescence
+            with np.load(state["arrays_path"], allow_pickle=False) as arrays:
+                he_canvas, fluor = arrays["he_canvas"], arrays["fluor"]
+            result = register_he_to_fluorescence(he_canvas, fluor, he_scale_to_fluor=1.0, search_radius=params["search_radius"])
+            warped = result["warped_he"]
+            if warped.shape[:2] != fluor.shape[:2]:
+                raise ValueError(f"Canonical registration returned warped H&E shape {warped.shape}, reference shape {fluor.shape}.")
+            registration_path = output_dir / "registration_arrays.npz"
+            np.savez(registration_path, warped=warped, tx=float(result["tx"]), ty=float(result["ty"]), correlation=float(result["correlation_score"]))
+            state.update({"registration_path": str(registration_path), "method_status": result["status"]})
+            artifacts = [str(registration_path)]
+        else:
+            with np.load(state["arrays_path"], allow_pickle=False) as arrays:
+                he_canvas, fluor = arrays["he_canvas"], arrays["fluor"]
+            with np.load(state["registration_path"], allow_pickle=False) as registration:
+                warped = registration["warped"]
+                result = {"tx": float(registration["tx"]), "ty": float(registration["ty"]), "correlation_score": float(registration["correlation"]), "status": state["method_status"]}
+            inventory_path, he_preview_path, fluor_preview_path = (Path(state[key]) for key in ("inventory_path", "he_preview_path", "fluor_preview_path"))
+            he_scale_to_fluor, fluor_downsample, fov_composition = state["he_scale_to_fluor"], state["fluor_downsample"], state["fov_composition"]
+            import matplotlib
 
-        from spatial_omics_toolkit.cycif.register import register_he_to_fluorescence
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            from spatial_omics_toolkit.application.plotting import ensure_arial
+            ensure_arial()
 
-        he_canvas = _physical_he_canvas(he, fluor.shape, he_scale_to_fluor)
-        result = register_he_to_fluorescence(
-            he_canvas,
-            fluor,
-            he_scale_to_fluor=1.0,
-            search_radius=params["search_radius"],
-        )
-        warped = result["warped_he"]
-        if warped.shape[:2] != fluor.shape[:2]:
-            raise ValueError(f"Canonical registration returned warped H&E shape {warped.shape}, reference shape {fluor.shape}.")
-        source_inventory = {
-            "workflow_id": _WORKFLOW_ID,
-            "linkage": params["linkage"],
-            "candidate_sources_confirmed": params["candidate_sources_confirmed"],
-            "acquisition_group_mapping": "UNMAPPED",
-            "moving_he": {**he_meta, "bounded_preview_shape_yxc": list(he.shape), "reader_axes": he_axes, "preview_scale_factor": he_downsample, "reference_grid_canvas_shape_yxc": list(he_canvas.shape)},
-            "reference_fluorescence": {**fluor_meta, "selected_channel_index": params["reference_channel_index"], "selected_channel_name": params["reference_channel_name"], "bounded_preview_shape_yx": list(fluor.shape), "reader_axes": fluor_axes, "preview_scale_factor": fluor_downsample},
-            "scale_relation": {
-                "he_to_fluor_preview_pixel_resolution": he_scale_to_fluor,
-                "formula": "(H&E native um/px / H&E preview factor) / (reference native um/px / reference preview factor)",
-                "orientation": "native CZI X/Y axes as returned by the CZI reader; no rotations/reflections are inferred",
+            plt.rcParams.update({"font.family": "Arial", "font.size": 5, "font.weight": "normal", "axes.labelsize": 5, "axes.titlesize": 5, "xtick.labelsize": 5, "ytick.labelsize": 5, "pdf.fonttype": 42, "ps.fonttype": 42, "axes.linewidth": 0.5, "lines.linewidth": 0.5, "xtick.major.width": 0.5, "ytick.major.width": 0.5})
+            fluor_display = np.asarray(fluor, dtype=np.float32)
+            low, high = np.percentile(fluor_display, (1, 99))
+            fluor_display = np.clip((fluor_display - low) / (high - low), 0, 1) if high > low else np.zeros_like(fluor_display)
+            figure, axes = plt.subplots(1, 2, figsize=(17.5 / 2.54, 8 / 2.54), dpi=150)
+            axes[0].imshow(fluor_display, cmap="gray", interpolation="nearest")
+            axes[0].imshow(_bounded_rgb(he_canvas), alpha=0.38, interpolation="nearest")
+            axes[0].set_xlabel("Reference X (preview px)")
+            axes[0].set_ylabel("Reference Y (preview px)")
+            axes[1].imshow(fluor_display, cmap="gray", interpolation="nearest")
+            axes[1].imshow(warped, alpha=0.38, interpolation="nearest")
+            axes[1].set_xlabel("Reference X (preview px)")
+            axes[1].set_ylabel("Reference Y (preview px)")
+            for axis in axes:
+                axis.tick_params(width=0.5, labelsize=5)
+            figure.text(0.28, 0.94, "Before translation", ha="center", va="center", fontsize=5)
+            figure.text(0.73, 0.94, "After translation", ha="center", va="center", fontsize=5)
+            figure.subplots_adjust(left=0.08, right=0.99, bottom=0.18, top=0.88, wspace=0.16)
+            overlay_pdf = output_dir / "before_after_alignment_overlay.pdf"
+            overlay_png = output_dir / "before_after_alignment_overlay.png"
+            figure.savefig(overlay_pdf, dpi=300)
+            figure.savefig(overlay_png, dpi=150)
+            plt.close(figure)
+
+            tx, ty = float(result["tx"]), float(result["ty"])
+            correlation = float(result["correlation_score"])
+            metric_diagnostic = not math.isfinite(correlation) or correlation <= 0.0
+            result_invalid = result["status"] != "ok" or not all(math.isfinite(value) for value in (tx, ty))
+            tx_record = tx if math.isfinite(tx) else None
+            ty_record = ty if math.isfinite(ty) else None
+            correlation_record = correlation if math.isfinite(correlation) else None
+            qc = {
+                "status": "WARNING",
+                "method_status": result["status"],
+                "alignment_accepted": False,
+                "review_required": True,
+                "method": "canonical register_he_to_fluorescence; translation-only exploratory serial-section alignment",
+                "translation_reference_preview_pixels": {"tx": tx_record, "ty": ty_record},
+                "translation_native_reference_pixel_equivalent": {
+                    "tx": tx / fluor_downsample if math.isfinite(tx) else None,
+                    "ty": ty / fluor_downsample if math.isfinite(ty) else None,
+                },
+                "correlation_score": correlation_record,
                 "reference_fov_composition": fov_composition,
-                "transform_coordinates": "translation in bounded reference preview pixels after direct metadata-scale sampling onto the reference canvas",
-            },
-        }
-        inventory_path = output_dir / "source_inventory_and_native_metadata.json"
-        inventory_path.write_text(json.dumps(source_inventory, indent=2, default=str) + "\n", encoding="utf-8")
-        he_preview_path = output_dir / "moving_he_source_preview.png"
-        fluor_preview_path = output_dir / "reference_channel_source_preview.png"
-        _save_source_preview(he, he_preview_path)
-        _save_source_preview(fluor, fluor_preview_path)
-
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from spatial_omics_toolkit.application.plotting import ensure_arial
-        ensure_arial()
-
-        plt.rcParams.update({"font.family": "Arial", "font.size": 5, "font.weight": "normal", "axes.labelsize": 5, "axes.titlesize": 5, "xtick.labelsize": 5, "ytick.labelsize": 5, "pdf.fonttype": 42, "ps.fonttype": 42, "axes.linewidth": 0.5, "lines.linewidth": 0.5, "xtick.major.width": 0.5, "ytick.major.width": 0.5})
-        fluor_display = np.asarray(fluor, dtype=np.float32)
-        low, high = np.percentile(fluor_display, (1, 99))
-        fluor_display = np.clip((fluor_display - low) / (high - low), 0, 1) if high > low else np.zeros_like(fluor_display)
-        figure, axes = plt.subplots(1, 2, figsize=(17.5 / 2.54, 8 / 2.54), dpi=150)
-        axes[0].imshow(fluor_display, cmap="gray", interpolation="nearest")
-        axes[0].imshow(_bounded_rgb(he_canvas), alpha=0.38, interpolation="nearest")
-        axes[0].set_xlabel("Reference X (preview px)")
-        axes[0].set_ylabel("Reference Y (preview px)")
-        axes[1].imshow(fluor_display, cmap="gray", interpolation="nearest")
-        axes[1].imshow(warped, alpha=0.38, interpolation="nearest")
-        axes[1].set_xlabel("Reference X (preview px)")
-        axes[1].set_ylabel("Reference Y (preview px)")
-        for axis in axes:
-            axis.tick_params(width=0.5, labelsize=5)
-        figure.text(0.28, 0.94, "Before translation", ha="center", va="center", fontsize=5)
-        figure.text(0.73, 0.94, "After translation", ha="center", va="center", fontsize=5)
-        figure.subplots_adjust(left=0.08, right=0.99, bottom=0.18, top=0.88, wspace=0.16)
-        overlay_pdf = output_dir / "before_after_alignment_overlay.pdf"
-        overlay_png = output_dir / "before_after_alignment_overlay.png"
-        figure.savefig(overlay_pdf, dpi=300)
-        figure.savefig(overlay_png, dpi=150)
-        plt.close(figure)
-
-        tx, ty = float(result["tx"]), float(result["ty"])
-        correlation = float(result["correlation_score"])
-        metric_diagnostic = not math.isfinite(correlation) or correlation <= 0.0
-        result_invalid = result["status"] != "ok" or not all(math.isfinite(value) for value in (tx, ty))
-        tx_record = tx if math.isfinite(tx) else None
-        ty_record = ty if math.isfinite(ty) else None
-        correlation_record = correlation if math.isfinite(correlation) else None
-        qc = {
-            "status": "WARNING",
-            "method_status": result["status"],
-            "alignment_accepted": False,
-            "review_required": True,
-            "method": "canonical register_he_to_fluorescence; translation-only exploratory serial-section alignment",
-            "translation_reference_preview_pixels": {"tx": tx_record, "ty": ty_record},
-            "translation_native_reference_pixel_equivalent": {
-                "tx": tx / fluor_downsample if math.isfinite(tx) else None,
-                "ty": ty / fluor_downsample if math.isfinite(ty) else None,
-            },
-            "correlation_score": correlation_record,
-            "reference_fov_composition": fov_composition,
-            "nonpositive_or_nonfinite_metric": metric_diagnostic,
-            "interpretation": "Metric is descriptive only; no acceptance threshold is defined. Alignment is not accepted; human visual review is required regardless of score.",
-            "limitations": ["No same-cell registration", "No biological identity or pairing claim", "No non-rigid correction", "Translation coordinates are in bounded preview/reference image axes"],
-            "source_inventory": str(inventory_path),
-            "overlays": {"pdf": str(overlay_pdf), "png": str(overlay_png)},
-            "source_previews": {"moving_he": str(he_preview_path), "reference_channel": str(fluor_preview_path)},
-        }
-        qc_path = output_dir / "alignment_qc_report.json"
-        qc_path.write_text(json.dumps(qc, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        artifacts = [str(inventory_path), str(he_preview_path), str(fluor_preview_path), str(overlay_pdf), str(overlay_png), str(qc_path)]
-        status = "WARNING"
-        warnings = ["Translation-only exploratory serial-section alignment; inspect the saved overlay visually. No same-cell registration or biological identity is established."]
-        if metric_diagnostic or result_invalid:
-            warnings.append("The metric is non-positive/non-finite or the method result is invalid; human visual review is required, and alignment is not accepted.")
-        event = StageEvent(stage_id=stage_id, status=status, message="Alignment outputs and descriptive metrics were generated from the selected raw CZI sources; human visual review is required.", parameters={**params, "he_to_fluor_preview_scale": he_scale_to_fluor, "tx": tx_record, "ty": ty_record, "correlation_score": correlation_record, "nonpositive_or_nonfinite_metric": metric_diagnostic, "alignment_accepted": False, "review_required": True}, artifacts=artifacts)
+                "nonpositive_or_nonfinite_metric": metric_diagnostic,
+                "interpretation": "Metric is descriptive only; no acceptance threshold is defined. Alignment is not accepted; human visual review is required regardless of score.",
+                "limitations": ["No same-cell registration", "No biological identity or pairing claim", "No non-rigid correction", "Translation coordinates are in bounded preview/reference image axes"],
+                "source_inventory": str(inventory_path),
+                "overlays": {"pdf": str(overlay_pdf), "png": str(overlay_png)},
+                "source_previews": {"moving_he": str(he_preview_path), "reference_channel": str(fluor_preview_path)},
+            }
+            qc_path = output_dir / "alignment_qc_report.json"
+            qc_path.write_text(json.dumps(qc, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            artifacts = [str(inventory_path), str(he_preview_path), str(fluor_preview_path), str(overlay_pdf), str(overlay_png), str(qc_path)]
+            status = "WARNING"
+            warnings = ["Translation-only exploratory serial-section alignment; inspect the saved overlay visually. No same-cell registration or biological identity is established."]
+            if metric_diagnostic or result_invalid:
+                warnings.append("The metric is non-positive/non-finite or the method result is invalid; human visual review is required, and alignment is not accepted.")
+            event = StageEvent(stage_id=stage_id, status=status, message="Alignment outputs and descriptive metrics were generated from the selected raw CZI sources; human visual review is required.", parameters={**params, "he_to_fluor_preview_scale": he_scale_to_fluor, "tx": tx_record, "ty": ty_record, "correlation_score": correlation_record, "nonpositive_or_nonfinite_metric": metric_diagnostic, "alignment_accepted": False, "review_required": True}, artifacts=artifacts)
+            emit(event)
+            return WorkflowResult(status=status, stages=[event], artifacts=artifacts, warnings=warnings, state=state, review_request={"required": True, "reason": "Inspect source previews and before/after overlay; this exploratory translation is not validated biological registration."})
+        event = StageEvent(stage_id=stage_id, status="SUCCEEDED", message=f"Integration stage {stage_id} completed.", artifacts=artifacts)
         emit(event)
-        return WorkflowResult(status=status, stages=[event], artifacts=artifacts, warnings=warnings, review_request={"required": True, "reason": "Inspect source previews and before/after overlay; this exploratory translation is not validated biological registration."})
+        return WorkflowResult(status="SUCCEEDED", stages=[event], artifacts=artifacts, state=state)
     except Exception as error:
         event = StageEvent(stage_id=stage_id, status="FAILED", message=f"Integration execution failed: {type(error).__name__}: {error}", parameters=params)
         emit(event)

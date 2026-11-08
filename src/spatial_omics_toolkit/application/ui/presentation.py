@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from graphlib import TopologicalSorter
 from html import escape
 from urllib.parse import urlsplit
 
@@ -462,7 +463,6 @@ def apply_theme() -> None:
         }
         [data-testid="stMain"] .workspace-hero p,
         [data-testid="stMain"] [data-testid="stMarkdownContainer"] .workspace-hero p {
-            max-width: 680px;
             margin: 0.55rem 0 0 !important;
             padding: 0 !important;
             color: #cbd5e1 !important;
@@ -689,54 +689,6 @@ def apply_theme() -> None:
             color: #ffffff;
         }
 
-        /* Stage Flow Diagram */
-        .stage-flow { margin: 0.65rem 0; }
-        .stage-detail {
-            min-width: 0;
-            overflow-wrap: anywhere;
-            padding: 0.75rem 0.85rem;
-            border: 1px solid var(--wb-border);
-            border-radius: 0.55rem;
-            background: #ffffff;
-        }
-        [data-testid="stMain"] .stage-detail h3 {
-            margin: 0.25rem 0;
-            padding: 0;
-            color: var(--wb-ink-900);
-            font-size: 0.92rem;
-        }
-        .stage-detail p {
-            margin: 0.3rem 0;
-            color: var(--wb-ink-600);
-            font-size: 0.84rem;
-        }
-        .stage-kind, .stage-number {
-            display: inline-block;
-            padding: 0.1rem 0.4rem;
-            border-radius: 0.25rem;
-            background: var(--wb-accent-soft);
-            color: var(--wb-accent);
-            font-size: 0.68rem;
-            font-weight: 700;
-            letter-spacing: 0.06em;
-            text-transform: uppercase;
-        }
-        .stage-inputs { list-style: none; padding: 0; margin: 0.45rem 0 0; }
-        .stage-inputs li { margin: 0.2rem 0; font-size: 0.82rem; color: var(--wb-ink-600); }
-        .stage-arrow { color: var(--wb-accent); font-weight: 700; padding: 0 0.25rem; }
-        .stage-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
-            gap: 0.6rem;
-            margin-top: 0.6rem;
-        }
-        .stage-tools {
-            margin-top: 0.55rem;
-            padding-top: 0.5rem;
-            border-top: 1px solid var(--wb-border);
-            font-size: 0.82rem;
-            color: var(--wb-ink-600);
-        }
         @media (max-width: 760px) {
             [data-testid="stMainBlockContainer"] { padding: 4.5rem 0.85rem 2.25rem; }
             .workspace-card-title, .workspace-card-copy { min-height: 0; }
@@ -763,229 +715,109 @@ def render_modality_banner(modality: str, descriptor: WorkflowDescriptor) -> Non
     )
 
 
-_WORKFLOW_PATH_NOTES = {
-    "cycif-raw-czi": [
-        "Conversion is optional; its OME-TIFF outputs are kept separately.",
-        "Registration uses the original CZI files, not conversion output, and requires confirmed grouping.",
-        "Marker export requires confirmed mapping; optional segmentation uses the registered export.",
-    ],
-    "cycif.tabular_analysis": [
-        "Steps 06–12 run only when selected.",
-        "Steps 09–11 independently use the current cell table; step 11 needs the matching step 10 settings, not its output.",
-        "Step 12 compares the biological-unit aggregate from step 09.",
-    ],
-    "hs.clinical-roi-hyperspectral": [
-        "Incomplete or unconfirmed specimen mapping stops analysis after the metadata review.",
-        "TMA1 and TMA2 phasors are computed separately.",
-        "Filtering and Gaussian mixture model (GMM) diagnostics are optional alternatives, not sequential steps.",
-    ],
-    "hs.native_spectral_qc": [
-        "One read produces the inventory, band review, and spectral moments.",
-        "Intensity and H1/H2 plots use those moments; this is technical quality control (QC) only.",
-    ],
-    "flim.raw_sdt": [
-        "Unless raw QC for all blocks is explicitly authorized, the inventory pauses at QC_PENDING for block review.",
-        "Raw-QC mode stops after counts and decay checks; full mode adds phasors, a count mask, optional filtering, and lifetimes.",
-        "A measured reference follows a separate conditional path; its phasors join target phasors only for calibration.",
-        "Lifetime output can also come directly from masked or filtered target phasors when calibration is not enabled.",
-    ],
-    "he-image-intake": [
-        "Each image uses one format-specific reader: OpenSlide for SVS, aicspylibczi for CZI, or tifffile for TIFF.",
-        "Inventory and available size-limited previews are collected after reading; images are not registered.",
-    ],
-    "visium-native-qc": [
-        "Classic Visium and Visium HD use alternative readers.",
-        "HD requires an explicit bin size before count QC.",
-        "Previews are conditional; no cell segmentation is performed.",
-    ],
-    "integration.serial_section_alignment": [
-        "The selected H&E and fluorescence/HS CZI images need source and channel confirmation.",
-        "Metadata and scale checks and size-limited previews precede translation-only registration.",
-        "The resulting metrics require human review and do not validate an alignment.",
-    ],
-}
+def _stage_graph(descriptor: WorkflowDescriptor) -> str:
+    """Build a fixed-scale, scrollable diagram from the execution DAG."""
+    stage_indexes = {stage.stage_id: index for index, stage in enumerate(descriptor.stages)}
+    if len(stage_indexes) != len(descriptor.stages):
+        raise ValueError("Workflow stages must have unique IDs.")
+    dependencies = {stage.stage_id: stage.depends_on for stage in descriptor.stages}
+    for stage in descriptor.stages:
+        for dependency in stage.depends_on:
+            if dependency not in stage_indexes:
+                raise ValueError(f"Unknown workflow stage dependency: {dependency}")
 
+    depths: dict[str, int] = {}
+    for stage_id in TopologicalSorter(dependencies).static_order():
+        depths[stage_id] = max((depths[item] + 1 for item in dependencies[stage_id]), default=0)
+    rows: dict[int, int] = {}
+    positions: dict[str, tuple[int, int]] = {}
+    for stage in descriptor.stages:
+        depth = depths[stage.stage_id]
+        row = rows.get(depth, 0)
+        rows[depth] = row + 1
+        positions[stage.stage_id] = (24 + depth * 340, 24 + row * 190)
 
-# Each card lists its actual inputs rather than implying that adjacent cards are connected.
-# Entries are (label, descriptor stage ID, branch kind, [(source label, condition)]).
-_WORKFLOW_GRAPHS = {
-    "cycif-raw-czi": [
-        ("Intake", "intake", "Input", []),
-        ("Conversion", "conversion", "Optional", [("Intake", "original CZI")]),
-        ("Registration", "registration", "Gate", [("Intake", "original CZI; confirmed groups")]),
-        ("Marker export", "export", "Gate", [("Registration", "confirmed panel")]),
-        ("Segmentation", "segmentation", "Optional", [("Marker export", "exported composites")]),
-    ],
-    "cycif.tabular_analysis": [
-        ("Selected cell table", None, "Input", []),
-        ("Intensity QC", "step06", "Optional", [("Selected cell table", "step 06")]),
-        ("Cell classification", "step07", "Optional", [("Intensity QC", "if enabled"), ("Selected cell table", "if step 06 is disabled")]),
-        ("Program scoring", "step08", "Optional", [("Cell classification", "if enabled"), ("Intensity QC", "if enabled; otherwise selected table"), ("Selected cell table", "if earlier steps are disabled")]),
-        ("Current cell frame", None, "Join", [("Program scoring", "if enabled"), ("Cell classification", "if scoring disabled"), ("Intensity QC", "if later steps disabled"), ("Selected cell table", "if steps 06–08 disabled")]),
-        ("Aggregation", "step09", "Optional", [("Current cell frame", "step 09")]),
-        ("Spatial features", "step10", "Optional", [("Current cell frame", "step 10")]),
-        ("Spatial null", "step11", "Optional", [("Current cell frame", "step 11; same step 10 configuration, not its result")]),
-        ("Group comparison", "step12", "Optional", [("Aggregation", "step 09 aggregate")]),
-    ],
-    "hs.clinical-roi-hyperspectral": [
-        ("Metadata audit", "metadata_audit", "Input", []),
-        ("Specimen mapping", None, "Gate", [("Metadata audit", "unconfirmed or incomplete: stop")]),
-        ("TMA1 phasors", "source_phasors", "Branch", [("Specimen mapping", "complete map")]),
-        ("TMA2 phasors", "source_phasors", "Branch", [("Specimen mapping", "complete map")]),
-        ("TMA1 filter", "exploratory", "Optional alternative", [("TMA1 phasors", "filter OR GMM")]),
-        ("TMA1 GMM", "exploratory", "Optional alternative", [("TMA1 phasors", "GMM OR filter")]),
-        ("TMA2 filter", "exploratory", "Optional alternative", [("TMA2 phasors", "filter OR GMM")]),
-        ("TMA2 GMM", "exploratory", "Optional alternative", [("TMA2 phasors", "GMM OR filter")]),
-    ],
-    "hs.native_spectral_qc": [
-        ("Native reader call", None, "Input", []),
-        ("Inventory and band audit", "hs_native_inventory", "Parallel output", [("Native reader call", "same reader call")]),
-        ("Moment maps", "hs_native_moments", "Parallel output", [("Native reader call", "same reader call")]),
-        ("Intensity plots", "hs_native_qc_plots", "Branch", [("Moment maps", "in-memory moments")]),
-        ("H1/H2 plots", "hs_native_qc_plots", "Branch", [("Moment maps", "in-memory moments")]),
-    ],
-    "flim.raw_sdt": [
-        ("Target inventory", "flim_inventory", "Input", []),
-        ("Block review", None, "Gate", [("Target inventory", "review selection; or authorize all-block raw QC")]),
-        ("Raw decay QC", "flim_raw_qc", "Branch", [("Block review", "selected blocks or authorized all-block raw QC")]),
-        ("Raw QC stop", None, "Stop", [("Raw decay QC", "raw_qc mode")]),
-        ("Target phasors", "flim_phasor", "Branch", [("Block review", "full mode; reviewed target inventory")]),
-        ("Count mask", "flim_count_mask", "Stage", [("Target phasors", "full mode")]),
-        ("Phasor filter", "flim_filter", "Optional", [("Count mask", "if enabled")]),
-        ("Measured reference input", None, "Optional input", []),
-        ("Reference inventory", "flim_reference_raw_qc", "Optional", [("Measured reference input", "measured SDT")]),
-        ("Reference QC", "flim_reference_raw_qc", "Branch", [("Reference inventory", "reference blocks")]),
-        ("Reference phasors", "flim_reference_phasor", "Branch", [("Reference inventory", "reference blocks")]),
-        ("Reference calibration", "flim_reference_calibration", "Optional join", [("Reference phasors", "measured reference"), ("Count mask", "target, if filter disabled"), ("Phasor filter", "target, if filter enabled")]),
-        ("Lifetimes", "flim_lifetimes", "Stage", [("Count mask", "uncalibrated; filter disabled"), ("Phasor filter", "uncalibrated; filter enabled"), ("Reference calibration", "if calibration enabled")]),
-    ],
-    "he-image-intake": [
-        ("File selection", None, "Input", []),
-        ("SVS reader", "image-intake", "Alternative", [("File selection", "SVS; OpenSlide if available")]),
-        ("CZI reader", "image-intake", "Alternative", [("File selection", "CZI; aicspylibczi if available")]),
-        ("TIFF reader", "image-intake", "Alternative", [("File selection", "TIFF; tifffile if available")]),
-        ("Inventory and bounded preview", "image-intake", "Join", [("SVS reader", "preview where supported"), ("CZI reader", "preview where supported"), ("TIFF reader", "preview where supported")]),
-    ],
-    "visium-native-qc": [
-        ("Bundle intake", "bundle-intake", "Input", []),
-        ("Classic Visium reader", "bundle-intake", "Alternative", [("Bundle intake", "classic Visium; reader availability required")]),
-        ("HD native bin", "bundle-intake", "Gate", [("Bundle intake", "Visium HD; explicit native bin")]),
-        ("HD reader", "bundle-intake", "Alternative", [("HD native bin", "reader availability required")]),
-        ("Native count QC", "count-qc", "Join", [("Classic Visium reader", "classic counts"), ("HD reader", "selected native bin counts")]),
-        ("Bounded preview", "count-qc", "Optional", [("Native count QC", "where supported")]),
-    ],
-    "integration.serial_section_alignment": [
-        ("Moving H&E CZI", None, "Input", []),
-        ("Reference fluorescence/HS CZI", None, "Input", []),
-        ("Source and channel authorization", "serial-section-alignment", "Gate", [("Moving H&E CZI", "explicit input"), ("Reference fluorescence/HS CZI", "explicit input and channel")]),
-        ("Metadata and physical scale", "serial-section-alignment", "Stage", [("Source and channel authorization", "preflight passed")]),
-        ("Bounded previews", "serial-section-alignment", "Stage", [("Metadata and physical scale", "validated metadata")]),
-        ("Translation-only registration", "serial-section-alignment", "Stage", [("Bounded previews", "bounded images")]),
-        ("Metrics and human review", "serial-section-alignment", "Gate", [("Translation-only registration", "review required; not validated")]),
-    ],
-}
+    width = max((x for x, _ in positions.values()), default=24) + 284
+    height = max((y for _, y in positions.values()), default=24) + 166
+    edges: list[str] = []
+    for index, stage in enumerate(descriptor.stages):
+        x2, y2 = positions[stage.stage_id]
+        for dependency in stage.depends_on:
+            x1, y1 = positions[dependency]
+            x1 += 260
+            y1 += 73
+            y2_center = y2 + 73
+            midpoint = (x1 + x2) // 2
+            edges.append(
+                f'<path data-source="{stage_indexes[dependency]}" data-target="{index}" '
+                f'd="M {x1} {y1} C {midpoint} {y1}, {midpoint} {y2_center}, {x2} {y2_center}" '
+                'marker-end="url(#workflow-diagram-arrow)"/>'
+            )
+    nodes: list[str] = []
+    for index, stage in enumerate(descriptor.stages):
+        x, y = positions[stage.stage_id]
+        tools = "; ".join(tool.name for tool in stage.tools)
+        nodes.append(
+            f'<article class="node" data-stage-index="{index}" style="left:{x}px;top:{y}px">'
+            f'<h3>{escape(stage.title)}</h3>'
+            + (f'<p><strong>Tools:</strong> {escape(tools)}</p>' if tools else "")
+            + ('<p class="condition">Conditional / review</p>' if stage.condition else "")
+            + '</article>'
+        )
+    return f"""<div class="workflow-diagram"><style>
+.workflow-diagram, .workflow-diagram * {{ box-sizing: border-box; }}
+.workflow-diagram {{ color: #1e293b; font-size: 0.84rem; line-height: 1.45; }}
+.workflow-diagram .viewport {{ width: 100%; height: 500px; overflow: auto; border: 1px solid #e2e8f0;
+                             border-radius: 0.5rem; background: #f8fafc; }}
+.workflow-diagram .canvas {{ position: relative; width: {width}px; height: {height}px; }}
+.workflow-diagram svg {{ position: absolute; inset: 0; overflow: visible; }}
+.workflow-diagram path {{ fill: none; stroke: #64748b; stroke-width: 1.5; }}
+.workflow-diagram .node {{ position: absolute; width: 260px; height: 146px; overflow: auto; padding: 0.65rem 0.8rem;
+                         border: 1px solid #c7d2fe; border-left: 5px solid #a5b4fc; border-right: 5px solid #a5b4fc;
+                         border-radius: 0.5rem; background: #fff; overflow-wrap: anywhere; }}
+.workflow-diagram h3 {{ font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                        color: #0f172a; font-size: 0.92rem; font-weight: 700; line-height: 1.35;
+                        letter-spacing: -0.02em; margin: 0 0 0.35rem; }}
+.workflow-diagram p {{ font-family: "Source Sans", sans-serif; font-size: 0.84rem; line-height: 1.45; margin: 0 0 0.35rem; }}
+.workflow-diagram .condition {{ color: #4338ca; font-size: 0.8rem; }}
+</style>
+<div class="viewport" tabindex="0" role="region" aria-label="Workflow diagram; scroll to see all stages">
+<div class="canvas"><svg width="{width}" height="{height}" aria-hidden="true">
+<defs><marker id="workflow-diagram-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+<path d="M 0 0 L 10 5 L 0 10 z" style="fill:#64748b;stroke:none"/></marker></defs>
+{"".join(edges)}</svg>{"".join(nodes)}</div></div></div>"""
 
 
 def render_stage_flow(descriptor: WorkflowDescriptor) -> None:
-    """Render explicit input relationships and the selected descriptor's stage details."""
+    """Show the execution stages and their declared dependency relationships."""
     st.write(
         "Inputs and settings determine which paths run; optional and alternative paths do not all run. "
-        "Arrows show how the steps connect. Tool versions describe the current workflow and may differ from a saved run."
+        "Arrows show declared stage dependencies. Tool versions describe the current workflow and may differ from a saved run."
     )
-    notes = _WORKFLOW_PATH_NOTES.get(descriptor.workflow_id)
-    if notes:
-        st.subheader("Which paths run")
-        st.markdown("\n".join(f"- {note}" for note in notes))
     if not descriptor.stages:
         st.caption("No analysis stages are declared for this workflow.")
         return
-    stages = {stage.stage_id: stage for stage in descriptor.stages}
-    graph = _WORKFLOW_GRAPHS.get(descriptor.workflow_id, [])
-    nodes_by_stage: dict[str, list[str]] = {stage.stage_id: [] for stage in descriptor.stages}
-    display_labels = {
-        "Native reader call": "Read original image",
-        "Inventory and bounded preview": "Inventory and size-limited preview",
-        "HD native bin": "HD bin size",
-        "Native count QC": "Original count QC",
-        "Bounded preview": "Size-limited preview",
-        "Bounded previews": "Size-limited previews",
-        "Current cell frame": "Current cell table",
-        "Spatial null": "Spatial null model",
-        "Metadata audit": "Metadata review",
-        "Inventory and band audit": "Inventory and band review",
-        "Moment maps": "Spectral moment maps",
-        "Raw QC stop": "Stop after raw QC",
-        "Bundle intake": "Input bundle",
-        "Moving H&E CZI": "H&E CZI to align",
-        "Source and channel authorization": "Confirm sources and channel",
-        "Metadata and physical scale": "Check metadata and physical scale",
-        "Metrics and human review": "Alignment metrics and human review",
-    }
-    display_kinds = {
-        "Gate": "Review required",
-        "Join": "Path convergence",
-        "Optional join": "Optional path convergence",
-        "Parallel output": "Parallel result",
-        "Branch": "Path",
-        "Stage": "Step",
-        "Stop": "Stopping point",
-    }
-    display_conditions = {
-        "complete map": "mapping complete",
-        "filter OR GMM": "filtering or GMM",
-        "GMM OR filter": "GMM or filtering",
-        "in-memory moments": "moments held in memory",
-        "raw_qc mode": "raw-QC mode",
-        "preflight passed": "initial checks passed",
-        "explicit input": "selected input",
-        "explicit input and channel": "selected input and channel",
-    }
-    for label, stage_id, kind, inputs in graph:
-        if stage_id not in stages:
-            # Inputs, gates, joins and stops have no descriptor stage of their own.
-            # Place them with the first downstream stage, or the upstream stage for
-            # terminal nodes. A partial descriptor still retains their guidance.
-            stage_id = next(
-                (target_stage for _, target_stage, _, target_inputs in graph
-                 if target_stage in stages and any(source == label for source, _ in target_inputs)),
-                None,
-            ) or next(
-                (source_stage for source_label, source_stage, _, _ in graph
-                 if source_stage in stages and any(source == source_label for source, _ in inputs)),
-                descriptor.stages[0].stage_id,
+    st.html(_stage_graph(descriptor))
+    st.caption("Scroll the diagram to see all stages. Expand the details for complete annotations.")
+    titles = {stage.stage_id: stage.title for stage in descriptor.stages}
+    with st.expander("Workflow details (accessible text)"):
+        for stage in descriptor.stages:
+            dependencies = ", ".join(titles[item] for item in stage.depends_on) or "None"
+            tools = "; ".join(
+                f"{tool.name} ({'runtime version recorded in the run record' if tool.name == 'MCMICRO' else tool.version}): {tool.role}"
+                for tool in stage.tools
+            ) or "None declared"
+            fields = (
+                ("Purpose", stage.purpose), ("Depends on", dependencies), ("Tools", tools),
+                ("Inputs", "; ".join(stage.inputs) or "None declared"),
+                ("Outputs", "; ".join(stage.outputs) or "None declared"),
+                ("Condition / review", stage.condition or "None declared"),
             )
-        display_label = display_labels.get(label, label)
-        display_kind = "Selection required" if label == "HD native bin" else display_kinds.get(kind, kind)
-        edges = "".join(
-            f'<li>{escape(display_labels.get(source, source))} '
-            f'<span class="stage-arrow" aria-hidden="true">→</span> '
-            f'{escape(display_label)} <small>({escape(display_conditions.get(condition, condition).replace("native bin", "bin size").replace("bounded images", "size-limited images"))})</small></li>'
-            for source, condition in inputs
-        )
-        nodes_by_stage[stage_id].append(
-            f'<p><strong>{escape(display_label)}</strong> '
-            f'<span class="stage-kind">{escape(display_kind)}</span></p>'
-            + (f'<ul class="stage-inputs" aria-label="Inputs to {escape(display_label, quote=True)}">{edges}</ul>' if edges else "")
-        )
-    details = []
-    for index, stage in enumerate(descriptor.stages, 1):
-        tools = "<br>".join(
-            f"<strong>{escape(tool.name)}</strong> · "
-            f"{escape('runtime version recorded in the run record' if tool.name == 'MCMICRO' else tool.version)}"
-            f" — {escape(tool.role)}"
-            for tool in stage.tools
-        ) if stage.tools else "No tools declared for this stage."
-        details.append(
-            f'<article class="stage-detail"><span class="stage-number">Stage {index}</span>'
-            f"<h3>{escape(stage.title)}</h3><p>{escape(stage.purpose)}</p>"
-            + "".join(nodes_by_stage[stage.stage_id])
-            + f'<div class="stage-tools"><strong>Tools for this step</strong><br>{tools}</div></article>'
-        )
-    st.markdown(
-        '<section class="stage-flow" aria-label="Workflow paths and declared stages">'
-        + '<div class="stage-details">' + "".join(details) + "</div></section>",
-        unsafe_allow_html=True,
-    )
+            st.markdown(
+                f"<h3>{escape(stage.title)}</h3>"
+                + "".join(f"<p><strong>{label}:</strong> {escape(value)}</p>" for label, value in fields),
+                unsafe_allow_html=True,
+            )
 
 
 def render_home(
@@ -998,7 +830,7 @@ def render_home(
         "Launch a file-backed technical example or configure your study sample sheet to run spatial imaging and omics workflows."
     )
     with st.container(border=True, key="home_hero"):
-        hero_left, hero_right = st.columns([3, 1], vertical_alignment="center")
+        hero_left, hero_right = st.columns([4, 1], vertical_alignment="center")
         with hero_left:
             st.markdown(
                 '<section class="workspace-hero">'

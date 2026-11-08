@@ -8,7 +8,9 @@ from typing import Any
 
 from spatial_omics_toolkit.application.contracts import RunRequest, StageEvent
 from spatial_omics_toolkit.application.intake import build_input_inventory, read_project_samples, sha256_file
+from spatial_omics_toolkit.application.nextflow import run_nextflow
 from spatial_omics_toolkit.application.runs import append_event, atomic_json, update_status
+from spatial_omics_toolkit.application.settings import validate_frozen_config_files
 from spatial_omics_toolkit.application.workflows.registry import get_workflow
 
 
@@ -192,6 +194,13 @@ def run_worker(run_dir: Path) -> int:
                 update_status(run_dir, event.status, event.message, current_stage=event.stage_id)
             else:
                 update_status(run_dir, "RUNNING", event.message, current_stage=event.stage_id)
+        config_blockers = validate_frozen_config_files(request)
+        if config_blockers:
+            message = "; ".join(config_blockers)
+            emit(StageEvent(stage_id="settings_integrity", status="BLOCKED", message=message))
+            update_status(run_dir, "BLOCKED", message, current_stage="settings_integrity")
+            return 2
+
 
         preflight = module.preflight(request)
         manifest_path = run_dir / "inputs" / "manifest.json"
@@ -274,7 +283,17 @@ def run_worker(run_dir: Path) -> int:
         })
         for warning in preflight.warnings:
             emit(StageEvent(stage_id="preflight", status="WARNING", message=warning))
-        result = module.execute(request, emit)
+        config_blockers = validate_frozen_config_files(request)
+        if config_blockers:
+            message = "; ".join(config_blockers)
+            emit(StageEvent(stage_id="settings_integrity", status="BLOCKED", message=message))
+            update_status(run_dir, "BLOCKED", message, current_stage="settings_integrity")
+            return 2
+        result = run_nextflow(request, descriptor, emit)
+        for stage in result.stages:
+            for artifact in stage.artifacts:
+                path = Path(artifact)
+                stage_for_artifact[(path if path.is_absolute() else run_dir / path).resolve()] = stage.stage_id
         artifact_entries: list[dict[str, Any]] = []
         warnings = list(result.warnings)
         sources: set[Path] = set()

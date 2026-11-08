@@ -14,11 +14,14 @@ SUPPORTED_MODALITIES = frozenset({"CycIF", "HS", "FLIM", "H&E", "Visium", "Integ
 
 def register_workflow(module: ModuleType) -> WorkflowDescriptor:
     """Validate and register one fully implemented workflow module."""
-    required = ("describe", "preflight", "execute")
+    required = ("describe", "preflight", "execute_stage")
     missing = [name for name in required if not callable(getattr(module, name, None))]
     if missing:
         raise ValueError(f"Workflow module {module.__name__} lacks required API: {', '.join(missing)}")
     descriptor = WorkflowDescriptor.model_validate(module.describe())
+    from spatial_omics_toolkit.application.nextflow import validate_dag
+
+    validate_dag(descriptor)
     if descriptor.modality not in SUPPORTED_MODALITIES:
         raise ValueError(f"Unsupported modality {descriptor.modality!r} in {module.__name__}")
     return descriptor
@@ -37,7 +40,7 @@ def _registry() -> dict[str, tuple[ModuleType, WorkflowDescriptor]]:
             continue
         try:
             module = importlib.import_module(f"{package.__name__}.{info.name}")
-            if not all(callable(getattr(module, name, None)) for name in ("describe", "preflight", "execute")):
+            if not callable(getattr(module, "describe", None)):
                 continue
             descriptor = register_workflow(module)
             if descriptor.workflow_id in registry:

@@ -15,7 +15,7 @@ from spatial_omics_toolkit.application.worker import _render_pdf_previews
 
 
 
-@pytest.mark.parametrize("stage_id", ["hs_native_inventory", "preview_hs_native_qc_plots"])
+@pytest.mark.parametrize("stage_id", ["hs_native_moments", "preview_hs_native_qc_plots"])
 def test_saved_source_render_merges_workflow_receipts_and_event_versions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage_id: str,
 ) -> None:

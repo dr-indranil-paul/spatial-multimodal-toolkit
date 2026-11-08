@@ -8,8 +8,11 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from tests.stage_runner import run_stages
+import spatial_omics_toolkit.application.workflows.cycif as adapter
 
-from spatial_omics_toolkit.application.contracts import RunRequest, StageEvent
+
+from spatial_omics_toolkit.application.contracts import RunRequest, StageEvent, WorkflowResult
 from spatial_omics_toolkit.application.workflows.cycif import (
     _canonical_hash,
     _input_fingerprint,
@@ -19,7 +22,6 @@ from spatial_omics_toolkit.application.workflows.cycif import (
     _intake_options,
     _write_checkpoint_receipts,
     validate_continuation,
-    execute,
 )
 
 from spatial_omics_toolkit.cycif.intake import parse_intake_filename
@@ -290,9 +292,14 @@ def test_export_checkpoint_is_reused_by_new_segmentation_run(tmp_path: Path, mon
     )
     monkeypatch.setattr(adapter.subprocess, "run", lambda *args, **kwargs: types.SimpleNamespace(stdout="mcmicro-test", stderr=""))
     monkeypatch.setenv("SLURM_JOB_ID", "test-job")
+    monkeypatch.setenv("SLURM_CPUS_PER_TASK", "4")
+    monkeypatch.setenv("SLURM_MEM_PER_NODE", "16384")
+    request.parameters["resources"] = {"cpus": 4, "memory_gb": 8}
+    config_values: dict[str, Any] = {}
 
     class FakeConfig:
         def __init__(self, **kwargs: Any) -> None:
+            config_values.update(kwargs)
             self.segmenter = kwargs.get("segmenter", "mccellpose")
 
     def fake_segmenter(_backend: str, *, project_dir: str | Path, **kwargs: Any) -> dict[str, str]:
@@ -308,11 +315,17 @@ def test_export_checkpoint_is_reused_by_new_segmentation_run(tmp_path: Path, mon
         {"stage_id": stage_id, "path": str(composite), "sha256": _sha(composite), "source_status": "SUCCEEDED"}
         for stage_id in ("intake", "registration", "export")
     ]
-    monkeypatch.setattr(adapter, "_resolve_marker_panel", lambda _: None)
+    monkeypatch.setattr(adapter, "_resolve_marker_panel", lambda _parameters, _root: None)
     monkeypatch.setattr(adapter, "validate_continuation", lambda _: ([], reused))
     emitted = []
-    result = adapter.execute(request, emitted.append)
+    result = run_stages(adapter, request, emitted.append)
     assert result.status == "SUCCEEDED"
+    assert config_values["profile"] == "singularity"
+    assert "mcmicro-local.config" in config_values["extra_args"]
+    local_config = (request.run_dir / "cycif" / "mcmicro-local.config").read_text(encoding="utf-8")
+    assert "process.executor = 'local'" in local_config
+    assert "executor.cpus = 4" in local_config
+    assert "executor.memory = '7168 MB'" in local_config
     assert [event.status for event in emitted if event.status == "REUSED"] == ["REUSED", "REUSED", "REUSED"]
     assert (request.run_dir / "resume_receipt.json").is_file()
     assert json.loads((request.run_dir / "resume_receipt.json").read_text(encoding="utf-8"))["parent_run_path"] == str(source.resolve())
@@ -372,7 +385,7 @@ def test_early_continuation_blocks_when_selected_stage_is_disabled(
     request.parameters.update(configuration)
     emitted: list[StageEvent] = []
 
-    result = execute(request, emitted.append)
+    result = run_stages(adapter, request, emitted.append)
 
     assert result.status == "BLOCKED"
     assert message in result.warnings[0]
@@ -435,7 +448,7 @@ def test_conversion_continuation_reuses_intake_and_dispatches_conversion(
     )
     emitted: list[StageEvent] = []
 
-    result = execute(request, emitted.append)
+    result = run_stages(adapter, request, emitted.append)
 
     assert result.status == "SUCCEEDED"
     assert conversion_calls
@@ -528,7 +541,7 @@ def test_registration_continuation_reuses_intake_and_skips_conversion(tmp_path: 
     monkeypatch.setattr(cycif, "step04_export_registered", forbidden_step, raising=False)
     emitted: list[StageEvent] = []
 
-    result = execute(request, emitted.append)
+    result = run_stages(adapter, request, emitted.append)
 
     assert result.status == "BLOCKED"  # Export remains gated until a reviewed marker panel is supplied.
     assert len(registration_calls) == 1
@@ -592,28 +605,37 @@ def test_registration_checkpoint_resumes_at_export_without_reregistering(tmp_pat
         "artifacts": [{"path": str(handoff.resolve()), "sha256": _sha(handoff)}],
     }
     (source / "checkpoint_receipts.json").write_text(json.dumps(receipt), encoding="utf-8")
+    parent_receipt_hash = _sha(source / "checkpoint_receipts.json")
+    parent_handoff_hash = _sha(handoff)
     reused = [
         {"stage_id": "intake", "path": str(source / "intake-report.json"), "sha256": _sha(source / "intake-report.json"), "source_status": "SUCCEEDED"},
         {"stage_id": "registration", "path": str(handoff), "sha256": _sha(handoff), "source_status": "SUCCEEDED"},
     ]
-    monkeypatch.setattr(adapter, "_resolve_marker_panel", lambda parameters: parameters["_resolved_marker_panel"])
+    monkeypatch.setattr(adapter, "_resolve_marker_panel", lambda parameters, _root: parameters["_resolved_marker_panel"])
     monkeypatch.setattr(adapter, "validate_continuation", lambda _: ([], reused))
     monkeypatch.setattr(adapter, "_load_registration_handoff", lambda _: {"round_order": ["R1"]})
     monkeypatch.setattr(adapter, "preflight", lambda _: PreflightResult(ready=True, resolved_parameters={}))
 
     def fake_export(_result: dict[str, Any], scene_label: str, output_dir: str | Path, **kwargs: Any) -> dict[str, str]:
         composite = Path(output_dir) / f"{scene_label}_composite.ome.tif"
-        composite.parent.mkdir(parents=True)
+        composite.parent.mkdir(parents=True, exist_ok=True)
         composite.write_bytes(b"new child composite")
         return {"composite_path": str(composite)}
 
     monkeypatch.setattr(cycif_api, "step04_export_registered", fake_export)
-    monkeypatch.setattr(adapter, "_execute_raw", lambda *_: (_ for _ in ()).throw(AssertionError("step03 raw path executed")))
+    def forbidden_registration(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("Continuation from export must not re-register parent scenes.")
+
+    monkeypatch.setattr(cycif_api, "step03_register_rounds", forbidden_registration)
     emitted = []
-    result = adapter.execute(request, emitted.append)
+    result = run_stages(adapter, request, emitted.append)
     assert result.status == "SUCCEEDED"
     assert any(event.stage_id == "registration" and event.status == "REUSED" for event in emitted)
     assert any(event.stage_id == "export" and event.status == "SUCCEEDED" for event in emitted)
+    assert not any(event.stage_id == "registration" and event.status == "RUNNING" for event in emitted)
+    assert _sha(source / "checkpoint_receipts.json") == parent_receipt_hash
+    assert _sha(handoff) == parent_handoff_hash
+    assert (request.run_dir / "cycif" / "exported" / "sceneA" / "sceneA_composite.ome.tif").read_bytes() == b"new child composite"
     resume_receipt = json.loads((request.run_dir / "resume_receipt.json").read_text(encoding="utf-8"))
     assert resume_receipt["start_stage"] == "export"
 
@@ -681,3 +703,51 @@ def test_streamlit_offers_conversion_and_registration_from_intake_checkpoint(tmp
     assert not app.exception
     boundary = next(widget for widget in app.selectbox if widget.label == "Continue at stage")
     assert boundary.options == ["conversion", "registration"]
+
+
+def test_raw_stage_graph_keeps_conversion_and_registration_independent() -> None:
+    stages = {stage.stage_id: stage for stage in adapter.describe().stages}
+    assert stages["conversion"].depends_on == ["intake"]
+    assert stages["registration"].depends_on == ["intake"]
+    assert stages["export"].depends_on == ["registration"]
+    assert stages["segmentation"].depends_on == ["export"]
+
+
+@pytest.mark.parametrize("status", ["BLOCKED", "FAILED", "QC_PENDING"])
+def test_raw_stage_never_computes_when_upstream_is_not_cleared(tmp_path: Path, status: str) -> None:
+    source, _, _ = _source(tmp_path)
+    request = _request(tmp_path, source)
+    request.parameters.pop("continuation")
+    request.parameters["registration"] = {"enabled": True, "confirmed_grouping": True}
+    events: list[StageEvent] = []
+    result = adapter.execute_stage(request, "registration", {"intake": WorkflowResult(status=status)}, events.append)
+    assert result.status == "BLOCKED"
+    assert events[-1].status == "BLOCKED"
+    assert not (request.run_dir / "cycif" / "registered").exists()
+
+
+def test_optional_raw_stages_report_skipped(tmp_path: Path) -> None:
+    source, _, _ = _source(tmp_path)
+    request = _request(tmp_path, source)
+    request.parameters.pop("continuation")
+    result = adapter.execute_stage(request, "conversion", {"intake": WorkflowResult(status="SUCCEEDED")}, lambda _: None)
+    assert result.status == "SKIPPED"
+
+
+def test_marker_panel_relative_path_uses_project_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    panel = project / "panel.csv"
+    panel.write_text(
+        "round,channel_index,marker_name,target_cell_compartment,fluorophore,notes\n"
+        "r1,0,DAPI,nucleus,blue,reviewed\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    parameters: dict[str, Any] = {
+        "registration": {"marker_panel_csv": "panel.csv", "marker_panel_confirmed": True}
+    }
+    resolved = adapter._resolve_marker_panel(parameters, project)
+    assert resolved is not None
+    assert resolved["source_path"] == str(panel.resolve())
+    assert resolved["marker_map"] == {"r1": ["DAPI"]}

@@ -12,6 +12,7 @@ from spatial_omics_toolkit.application.intake import ALLOWED_ROOT, lexical_path_
 from spatial_omics_toolkit.application.runs import append_event, atomic_json, create_run_bundle, update_status, utc_now
 from spatial_omics_toolkit.application.workflows.registry import get_workflow
 from spatial_omics_toolkit.application.scheduler import submit_controller
+from spatial_omics_toolkit.application.settings import PROFILE_KEY, config_file_hashes, default_settings, freeze_profile, profile_metadata
 
 
 def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, modality_dir: Path,
@@ -61,6 +62,11 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
     except OSError as exc:
         annotation_csv_sha256 = None
         blockers.append(f"Unable to read project_samples.csv for this run: {exc}")
+    try:
+        initial_config_hashes = config_file_hashes(descriptor, request.parameters, project_root)
+    except (ValueError, OSError) as exc:
+        initial_config_hashes = None
+        blockers.append(f"Settings configuration: {exc}")
     quick_request = request.model_copy(deep=True)
     quick_request.parameters = {**request.parameters, "_preflight_mode": "quick"}
     try:
@@ -94,6 +100,19 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
             blockers.append("SLURM task memory_gb must be an integer from 1 through 512")
         if time_limit not in {"8h", "24h", "48h", "72h", "168h"}:
             blockers.append("SLURM task time_limit must be one of 8h, 24h, 48h, 72h, or 168h")
+    try:
+        profile = resolved.get(PROFILE_KEY)
+        if profile is None:
+            resolved[PROFILE_KEY] = profile_metadata(default_settings(descriptor))
+        elif isinstance(profile, dict) and profile.get("project_root") is not None and Path(str(profile["project_root"])).resolve() != project_root.resolve():
+            raise ValueError("The selected settings file belongs to a different project")
+        frozen = freeze_profile(descriptor, resolved, project_root)
+        if frozen is not None and initial_config_hashes is not None and frozen["config_files"] != initial_config_hashes:
+            raise ValueError("A settings configuration file changed during preflight; run checks again")
+        if frozen is not None:
+            resolved[PROFILE_KEY] = frozen
+    except (ValueError, OSError, UnicodeError) as exc:
+        blockers.append(f"Settings profile: {exc}")
     request.parameters = resolved
     return request, PreflightResult(ready=not blockers, blockers=blockers, warnings=warnings, resolved_parameters=resolved)
 
@@ -102,6 +121,9 @@ def submit_request(request: RunRequest, preflight: PreflightResult) -> str:
     if not preflight.ready:
         raise ValueError("Cannot submit a blocked workflow request")
     _, descriptor = get_workflow(request.workflow_id)
+    frozen = freeze_profile(descriptor, request.parameters, request.project_root)
+    if frozen is None or frozen != preflight.resolved_parameters.get(PROFILE_KEY) or frozen != request.parameters.get(PROFILE_KEY):
+        raise ValueError("Settings changed after preflight; run checks again before submission")
     create_run_bundle(request, descriptor.model_dump(mode="json"), {**preflight.resolved_parameters, **request.parameters})
     try:
         job_id = submit_controller(request)

@@ -151,6 +151,33 @@ def create_run_bundle(request: RunRequest, descriptor: dict[str, Any], resolved_
     snapshot_temporary = annotation_snapshot.with_suffix(".csv.tmp")
     snapshot_temporary.write_bytes(annotation_bytes)
     os.replace(snapshot_temporary, annotation_snapshot)
+    settings = resolved_parameters.get("_settings_profile")
+    if isinstance(settings, dict):
+        for key, filename in (("source_toml", "settings_source.toml"), ("effective_toml", "settings_effective.toml")):
+            text = settings.get(key)
+            if not isinstance(text, str):
+                raise ValueError(f"Missing frozen {key}")
+            snapshot = request.run_dir / "inputs" / filename
+            snapshot.write_text(text, encoding="utf-8")
+            snapshot.chmod(0o440)
+        config_files = settings.get("config_files", {})
+        if not isinstance(config_files, dict):
+            raise ValueError("Invalid frozen configuration file metadata")
+        config_snapshots: dict[str, dict[str, str]] = {}
+        for index, (name, info) in enumerate(sorted(config_files.items())):
+            if not isinstance(info, dict) or not isinstance(info.get("path"), str) or not isinstance(info.get("sha256"), str):
+                raise ValueError(f"Invalid frozen configuration metadata for {name}")
+            snapshot = request.run_dir / "inputs" / f"settings_config_{index}.json"
+            digest = hashlib.sha256()
+            with Path(info["path"]).open("rb") as source, snapshot.open("xb") as target:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                    target.write(chunk)
+            if digest.hexdigest() != info["sha256"]:
+                raise ValueError(f"Configuration file for {name} changed after preflight")
+            snapshot.chmod(0o440)
+            config_snapshots[name] = {"path": f"inputs/{snapshot.name}", "sha256": digest.hexdigest()}
+        atomic_json(request.run_dir / "inputs" / "settings_configs.json", config_snapshots)
     annotation_snapshot.chmod(0o440)
     atomic_json(request.run_dir / "inputs" / "manifest.json", {
         "modality_dir": str(request.modality_dir.absolute()),

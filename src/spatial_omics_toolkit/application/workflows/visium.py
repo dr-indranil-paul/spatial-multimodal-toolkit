@@ -333,30 +333,23 @@ def describe() -> WorkflowDescriptor:
                 stage_id="bundle-intake",
                 title="Check Space Ranger input files",
                 purpose="Validate the original count matrix, tissue coordinates, tissue image and scale metadata.",
-                tools=[
-                    ToolReference(
-                        name="Scanpy read_visium",
-                        version=_version("scanpy"),
-                        role="Read Space Ranger Visium output",
-                        documentation_url="https://scanpy.readthedocs.io/en/stable/generated/scanpy.read_visium.html",
-                    ),
-                    ToolReference(
-                        name="spatialdata-io visium_hd",
-                        version=_version("spatialdata-io"),
-                        role="Read Space Ranger Visium HD output",
-                        documentation_url="https://spatialdata.scverse.org/projects/io/en/latest/generated/spatialdata_io.visium_hd.html",
-                    ),
-                ],
+                depends_on=[],
+                condition="Always; preflight must accept the input bundles.",
+                inputs=["Space Ranger bundles", "specimen mapping"],
+                outputs=["bundle_inventory.json", "validated bundle metadata"],
                 implementations=[
                     FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_discover_bundles", role="Find supported Visium bundles"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_build_visium_hd_reader_view", role="Prepare the selected original HD inputs for the reader"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Load the original Visium or HD bundle with the appropriate reader"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute_stage", role="Validate and inventory the input bundles"),
                 ],
             ),
             StageDefinition(
                 stage_id="count-qc",
                 title="Count quality checks",
-                purpose="Summarize measured total counts and detected features from the selected original spot or bin count table, and create a size-limited preview. Segmentation-derived cell tables are not used.",
+                purpose="Read and summarize measured total counts and detected features from the selected original spot or bin count table. Segmentation-derived cell tables are not used.",
+                depends_on=["bundle-intake"],
+                condition="Input bundle intake succeeded.",
+                inputs=["validated bundle metadata", "original count matrices and coordinates"],
+                outputs=["spot_bin_qc.csv", "count QC receipt", "optional bounded tissue image"],
                 tools=[
                     ToolReference(
                         name="Scanpy",
@@ -365,16 +358,27 @@ def describe() -> WorkflowDescriptor:
                         documentation_url="https://scanpy.readthedocs.io/",
                     ),
                     ToolReference(
-                        name="Matplotlib",
-                        version=_version("matplotlib"),
-                        role="Create a size-limited spatial preview",
-                        documentation_url="https://matplotlib.org/",
+                        name="spatialdata-io visium_hd",
+                        version=_version("spatialdata-io"),
+                        role="Read the selected Space Ranger Visium HD table",
+                        documentation_url="https://spatialdata.scverse.org/projects/io/en/latest/generated/spatialdata_io.visium_hd.html",
                     ),
                 ],
                 implementations=[
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute", role="Compute count quality metrics"),
-                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_write_count_preview", role="Render a size-limited spatial count preview"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_build_visium_hd_reader_view", role="Prepare the selected original HD inputs for the reader"),
+                    FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="execute_stage", role="Read the selected count table and compute count quality metrics"),
                 ],
+            ),
+            StageDefinition(
+                stage_id="spatial-preview",
+                title="Spatial count preview",
+                purpose="Render bounded display-only spatial count previews where native coordinates are available.",
+                depends_on=["count-qc"],
+                condition="Always finalize bundle receipts; render previews only where usable native coordinates are available.",
+                inputs=["spot_bin_qc.csv", "count QC receipt"],
+                outputs=["bundle_receipt.json", "optional measured_counts_spatial_preview.png"],
+                tools=[ToolReference(name="Matplotlib", version=_version("matplotlib"), role="Render a bounded spatial preview", documentation_url="https://matplotlib.org/")],
+                implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/visium.py", function_name="_write_count_preview", role="Render a size-limited spatial count preview")],
             ),
         ],
         input_description=(
@@ -574,21 +578,36 @@ def preflight(request: RunRequest) -> PreflightResult:
     return PreflightResult(ready=not blockers, blockers=blockers, warnings=warnings, resolved_parameters=params)
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    check = preflight(request)
-    if not check.ready:
-        event = StageEvent(
-            stage_id="bundle-intake",
-            status="BLOCKED",
-            message="Visium bundle preflight blocked.",
-            parameters=check.resolved_parameters,
-        )
+def execute_stage(
+    request: RunRequest, stage_id: str, upstream: dict[str, WorkflowResult], emit: WorkflowEmitter
+) -> WorkflowResult:
+    if stage_id not in {"bundle-intake", "count-qc", "spatial-preview"}:
+        raise ValueError(f"Unknown Visium stage: {stage_id}")
+    dependency = {"count-qc": "bundle-intake", "spatial-preview": "count-qc"}.get(stage_id)
+    if dependency is not None:
+        prior = upstream.get(dependency)
+        if prior is None or prior.status not in {"SUCCEEDED", "WARNING", "REUSED"}:
+            status = prior.status if prior is not None and prior.status in {"FAILED", "BLOCKED", "QC_PENDING"} else "BLOCKED"
+            event = StageEvent(stage_id=stage_id, status=status, message=f"Required stage {dependency} did not succeed.")
+            emit(event)
+            return WorkflowResult(status=status, stages=[event], warnings=[event.message])
+    if stage_id == "spatial-preview":
+        return _execute_preview(request, upstream["count-qc"], emit)
+    if stage_id == "bundle-intake":
+        check = preflight(request)
+        if not check.ready:
+            event = StageEvent(stage_id=stage_id, status="BLOCKED", message="Visium bundle preflight blocked.", parameters=check.resolved_parameters)
+            emit(event)
+            return WorkflowResult(status="BLOCKED", stages=[event], warnings=check.blockers + check.warnings)
+        output_dir = request.run_dir / "visium_native_qc"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        inventory_path = output_dir / "bundle_inventory.json"
+        inventory_path.write_text(json.dumps(check.resolved_parameters["bundles"], indent=2, default=str) + "\n", encoding="utf-8")
+        status = "WARNING" if check.warnings else "SUCCEEDED"
+        event = StageEvent(stage_id=stage_id, status=status, message="Validated and inventoried Space Ranger bundles.", artifacts=[str(inventory_path)])
         emit(event)
-        return WorkflowResult(
-            status="BLOCKED",
-            stages=[event],
-            warnings=check.blockers + check.warnings,
-        )
+        return WorkflowResult(status=status, stages=[event], artifacts=[str(inventory_path)], warnings=check.warnings, state={"resolved_parameters": check.resolved_parameters})
+    check = PreflightResult(ready=True, resolved_parameters=upstream["bundle-intake"].state["resolved_parameters"])
 
     import numpy as np
 
@@ -620,7 +639,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
         sample_output.mkdir(parents=True, exist_ok=True)
         emit(
             StageEvent(
-                stage_id="bundle-intake",
+                stage_id="count-qc",
                 status="RUNNING",
                 message=f"Reading Space Ranger bundle {bundle}.",
                 tool_versions=tool_versions,
@@ -635,7 +654,6 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
         selected_table_name = "filtered_feature_bc_matrix.h5"
         reader_table_names = [selected_table_name]
         ignored_reader_table_names: list[str] = []
-        reader_succeeded = False
         try:
             if is_hd:
                 from spatialdata_io import visium_hd
@@ -693,41 +711,19 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 adata = sc.read_visium(path=str(bundle), count_file="filtered_feature_bc_matrix.h5")
             if adata.n_obs == 0 or adata.n_vars == 0:
                 raise ValueError("The filtered count matrix has zero observations or features.")
-            reader_succeeded = True
-            intake_event = StageEvent(
-                stage_id="bundle-intake",
-                status="SUCCEEDED",
-                message=f"Loaded {adata.n_obs} native spots/bins and {adata.n_vars} features with {reader_name}.",
-                tool_versions=tool_versions,
-                parameters={
-                    "platform": platform,
-                    "reader": reader_name,
-                    "count_table_name": selected_table_name if is_hd else "filtered_feature_bc_matrix.h5",
-                    "bundle_key": bundle_info["bundle_key"],
-                },
-            )
-            events.append(intake_event)
-            emit(intake_event)
             counts = adata.X
             adata.obs["total_counts_measured"] = np.asarray(counts.sum(axis=1)).ravel()
             adata.obs["features_detected_measured"] = np.asarray((counts > 0).sum(axis=1)).ravel()
             qc_path = sample_output / "spot_bin_qc.csv"
             qc_frame = adata.obs[["total_counts_measured", "features_detected_measured"]].copy()
             spatial_coordinates = adata.obsm.get("spatial")
-            preview_path: Path | None = None
-            preview_receipt: dict[str, Any] | None = None
+            has_coordinates = False
             if spatial_coordinates is not None:
                 coordinate_values = np.asarray(spatial_coordinates)
                 if coordinate_values.ndim == 2 and coordinate_values.shape[0] == adata.n_obs and coordinate_values.shape[1] >= 2:
                     qc_frame["spatial_x_native"] = coordinate_values[:, 0]
                     qc_frame["spatial_y_native"] = coordinate_values[:, 1]
-                    preview_path = sample_output / "measured_counts_spatial_preview.png"
-                    preview_receipt = _write_count_preview(
-                        coordinate_values,
-                        adata.obs["total_counts_measured"].to_numpy(),
-                        preview_path,
-                        int(check.resolved_parameters["preview_max_points"]),
-                    )
+                    has_coordinates = True
                 else:
                     warnings.append(f"Reader returned unusable spatial coordinates for {bundle}; count QC was retained without a spatial preview.")
             else:
@@ -838,7 +834,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 if tissue_image_copy is not None and tissue_image is not None
                 else None
             )
-            display_assets = [asset for asset in (preview_receipt, tissue_image_asset) if asset is not None]
+            display_assets = [asset for asset in (tissue_image_asset,) if asset is not None]
             segmentation_root = bundle / "segmented_outputs"
             segmentation_source_paths = [
                 str(path)
@@ -848,7 +844,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 )
                 if path.is_file()
             ]
-            receipt_path = sample_output / "bundle_receipt.json"
+            receipt_path = sample_output / "count_qc_receipt.json"
             receipt = {
                 "reader": reader_name,
                 "tool_version": reader_version,
@@ -866,7 +862,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 "count_layer": "Measured filtered counts read from the source bundle; matrix is referenced, not copied.",
                 "native_coordinate_sources": coordinate_sources,
                 "coordinate_table": str(qc_path),
-                "coordinate_columns": ["spatial_x_native", "spatial_y_native"] if preview_receipt is not None else [],
+                "coordinate_columns": ["spatial_x_native", "spatial_y_native"] if has_coordinates else [],
                 "coordinate_system": "reader-provided obsm['spatial'] as native x/y; no coordinate transform applied in QC table",
                 "native_image_sources": native_image_sources,
                 "tissue_lowres_preview": tissue_image_asset,
@@ -890,8 +886,6 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             }
             receipt_path.write_text(json.dumps(receipt, indent=2, default=str) + "\n", encoding="utf-8")
             sample_artifacts = [str(qc_path), str(receipt_path)]
-            if preview_path is not None:
-                sample_artifacts.append(str(preview_path))
             if tissue_image_copy is not None:
                 sample_artifacts.append(str(tissue_image_copy))
             artifacts.extend(sample_artifacts)
@@ -918,7 +912,7 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             )
         except Exception as exc:
             event = StageEvent(
-                stage_id="count-qc" if reader_succeeded else "bundle-intake",
+                stage_id="count-qc",
                 status="FAILED",
                 message=f"Published Visium reader or QC failed for {bundle}: {type(exc).__name__}: {exc}",
                 tool_versions=tool_versions,
@@ -927,9 +921,6 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
             warnings.append(event.message)
         events.append(event)
         emit(event)
-    inventory_path = output_dir / "bundle_inventory.json"
-    inventory_path.write_text(json.dumps(bundles, indent=2, default=str) + "\n", encoding="utf-8")
-    artifacts.append(str(inventory_path))
     failed = any(event.status == "FAILED" for event in events)
     return WorkflowResult(
         status="FAILED" if failed else ("WARNING" if warnings else "SUCCEEDED"),
@@ -937,3 +928,58 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
         artifacts=artifacts,
         warnings=warnings,
     )
+
+
+def _execute_preview(request: RunRequest, counts: WorkflowResult, emit: WorkflowEmitter) -> WorkflowResult:
+    import csv
+
+    import numpy as np
+
+    max_points = int(request.parameters.get("preview_max_points", 50000))
+    artifacts: list[str] = []
+    try:
+        for artifact in counts.artifacts:
+            receipt_path = Path(artifact)
+            if receipt_path.name != "count_qc_receipt.json":
+                continue
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            final_receipt_path = receipt_path.parent / "bundle_receipt.json"
+            if not receipt["coordinate_columns"]:
+                final_receipt_path.write_text(json.dumps(receipt, indent=2, default=str) + "\n", encoding="utf-8")
+                artifacts.append(str(final_receipt_path))
+                continue
+            total = int(receipt["native_observations"])
+            indices = np.linspace(0, total - 1, min(total, max_points), dtype=np.int64)
+            coordinates: list[list[float]] = []
+            values: list[float] = []
+            with Path(receipt["coordinate_table"]).open(newline="", encoding="utf-8") as handle:
+                rows = csv.DictReader(handle)
+                selected = iter(indices)
+                target = next(selected, None)
+                for index, row in enumerate(rows):
+                    if target is None:
+                        break
+                    if index == target:
+                        coordinates.append([float(row["spatial_x_native"]), float(row["spatial_y_native"])])
+                        values.append(float(row["total_counts_measured"]))
+                        target = next(selected, None)
+            if target is not None:
+                raise ValueError(f"QC table has fewer rows than its receipt: {receipt['coordinate_table']}")
+            preview_path = receipt_path.parent / "measured_counts_spatial_preview.png"
+            preview = _write_count_preview(coordinates, values, preview_path, max_points)
+            preview["observations_total"] = total
+            preview["subsampling"] = "evenly spaced by reader row order" if len(values) < total else "none"
+            receipt["display_assets"] = [asset for asset in receipt["display_assets"] if asset.get("artifact_type") != "bounded_spatial_count_preview"]
+            receipt["display_assets"].insert(0, preview)
+            final_receipt_path.write_text(json.dumps(receipt, indent=2, default=str) + "\n", encoding="utf-8")
+            artifacts.extend([str(final_receipt_path), str(preview_path)])
+    except Exception as exc:
+        event = StageEvent(stage_id="spatial-preview", status="FAILED", message=f"Spatial preview failed: {type(exc).__name__}: {exc}")
+        emit(event)
+        return WorkflowResult(status="FAILED", stages=[event], artifacts=artifacts, warnings=[event.message])
+    has_preview = any(Path(artifact).name == "measured_counts_spatial_preview.png" for artifact in artifacts)
+    status = "SUCCEEDED" if has_preview else "SKIPPED"
+    message = "Rendered bounded spatial count previews." if has_preview else "No usable native coordinates are available for spatial previews; bundle receipts were retained."
+    event = StageEvent(stage_id="spatial-preview", status=status, message=message, artifacts=artifacts)
+    emit(event)
+    return WorkflowResult(status=status, stages=[event], artifacts=artifacts)

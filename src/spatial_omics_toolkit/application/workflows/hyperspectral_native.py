@@ -101,9 +101,8 @@ def describe() -> WorkflowDescriptor:
         title="Hyperspectral technical QC",
         description="Read one selected raw spectral CZI and produce intensity and spectral-phasor diagnostics. These outputs are for technical quality control only, not biological inference, unmixing, or group comparisons.",
         stages=[
-            StageDefinition(stage_id="hs_native_inventory", title="Check spectral input", purpose="Record the source file identity, original image grid, spectral-band checks, and working-memory limit.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Check the CZI and compute spectral moments"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate the original channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate the spectral channel grid")]),
-            StageDefinition(stage_id="hs_native_moments", title="Create spectral moment maps", purpose="Read contiguous, equal-width spectral bands and save five intensity and phasor moment maps on the original image grid.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Read five intensity and phasor moments on the original grid"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate the original channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate the spectral channel grid")]),
-            StageDefinition(stage_id="hs_native_qc_plots", title="Plot technical quality checks", purpose="Plot intensity and first- and second-harmonic spectral phasor densities without biological interpretation.", tools=[reader], implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/hyperspectral_native.py", function_name="execute", role="Create quality-control figures from saved spectral moments")]),
+            StageDefinition(stage_id="hs_native_moments", title="Read and audit native spectral moments", purpose="In one canonical read, validate the source layout and spectral bands, record metadata and compute five moment maps on the original grid.", tools=[reader, metadata], implementations=[FunctionReference(source_file="external:clinical_roi_hs_flim.py", function_name="read_native_hs_moments", role="Validate and read the native spectral moments"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_layout", role="Validate the original channel layout"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="inspect_raw_metadata", role="Inspect raw metadata"), FunctionReference(source_file="external:clinical_roi_hyperspectral.py", function_name="_spectral_channel_grid", role="Validate the spectral channel grid")], depends_on=[], condition="One selected native CZI passes preflight", inputs=["Selected native CZI", "Working-memory limit"], outputs=["Source metadata JSON", "Spectral-band audit CSV", "Spectral moment maps NPZ"]),
+            StageDefinition(stage_id="hs_native_qc_plots", title="Plot technical quality checks", purpose="Plot intensity and first- and second-harmonic spectral phasor densities without biological interpretation.", tools=[ToolReference(name="matplotlib", version="Version recorded in each run receipt", role="Render technical QC PDFs")], implementations=[FunctionReference(source_file="spatial_omics_toolkit/application/workflows/hyperspectral_native.py", function_name="execute_stage", role="Create quality-control figures from saved spectral moments")], depends_on=["hs_native_moments"], condition="Native spectral moments succeeded", inputs=["Spectral moment maps NPZ", "Source metadata JSON"], outputs=["Intensity QC PDF", "Spectral phasor density QC PDF", "Adapter receipt JSON"]),
         ],
         input_description=(
             "- A modality folder searched recursively for native spectral `.czi` files. One file is processed per run: a sole CZI is selected automatically; with multiple files, supply the exact `source_czi` path. Other files are reported, not decoded.\n"
@@ -204,61 +203,75 @@ def preflight(request: RunRequest) -> PreflightResult:
     return PreflightResult(ready=not blockers, blockers=blockers, warnings=warnings, resolved_parameters=resolved)
 
 
-def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
-    check = preflight(request)
-    warnings = list(check.warnings)
-    events: list[StageEvent] = []
-    artifacts: list[str] = []
-    if not check.ready:
-        event = StageEvent(stage_id="hs_native_preflight", status="BLOCKED", message="; ".join(check.blockers), parameters=check.resolved_parameters)
-        emit(event)
-        return WorkflowResult(status="BLOCKED", stages=[event], warnings=warnings + check.blockers)
-    params = check.resolved_parameters
-    source_path = Path(params["input_files"][0])
-    source_dir = _source_dir()
+def execute_stage(request: RunRequest, stage_id: str, upstream: dict[str, WorkflowResult], emit: WorkflowEmitter) -> WorkflowResult:
+    if stage_id not in {"hs_native_moments", "hs_native_qc_plots"}:
+        raise ValueError(f"Unknown native hyperspectral stage: {stage_id}")
+    warnings: list[str] = []
+    params: dict[str, Any] = {}
     root = request.run_dir.expanduser().resolve()
     objects, tables, diagnostics = root / "objects", root / "tables", root / "diagnostics"
-    for directory in (root, objects, tables, diagnostics):
-        directory.mkdir(parents=True, exist_ok=True)
+    if stage_id == "hs_native_qc_plots":
+        dependency = upstream.get("hs_native_moments")
+        if dependency is None or dependency.status not in {"SUCCEEDED", "REUSED"}:
+            reason = "Native spectral moments have not succeeded."
+            event = StageEvent(stage_id=stage_id, status="BLOCKED", message=reason)
+            emit(event)
+            return WorkflowResult(status="BLOCKED", stages=[event], warnings=[reason])
+        params = dependency.state.get("parameters", {})
+        warnings = list(dependency.warnings)
+    else:
+        check = preflight(request)
+        warnings = list(check.warnings)
+        params = check.resolved_parameters
+        if not check.ready:
+            event = StageEvent(stage_id=stage_id, status="BLOCKED", message="; ".join(check.blockers), parameters=params)
+            emit(event)
+            return WorkflowResult(status="BLOCKED", stages=[event], warnings=warnings + check.blockers)
+    running = StageEvent(stage_id=stage_id, status="RUNNING", message="Running native spectral technical QC stage", parameters=params)
+    emit(running)
     try:
-        if _stat_signature(source_path) != params["input_stat"][str(source_path)]:
-            raise ValueError("Native CZI changed after preflight; submit a fresh run.")
-        source_sha256 = _sha256(source_path)
-        if _stat_signature(source_path) != params["input_stat"][str(source_path)]:
-            raise ValueError("Native CZI changed while source hashing was in progress.")
-        params["input_sha256"] = {str(source_path): source_sha256}
-        tools = _versions()
-        event = StageEvent(stage_id="hs_native_inventory", status="RUNNING", message="Auditing exact native spectral CZI and bounded resource settings", tool_versions=tools, parameters=params)
-        emit(event)
-        events.append(event)
-        reader = _reader()
-        moments, bands, native_metadata = reader.read_native_hs_moments(source_path, max_working_bytes=params["max_working_bytes"])
-        metadata_path = root / "native_source_metadata.json"
-        metadata = {
-            "workflow_id": WORKFLOW_ID,
-            "source_path": str(source_path),
-            "source_sha256": source_sha256,
-            "source_stat": params["input_stat"][str(source_path)],
-            "native_metadata": native_metadata,
-            "moment_names": ["intensity_sum", "h1_real_weighted_sum", "h1_imag_weighted_sum", "h2_real_weighted_sum", "h2_imag_weighted_sum"],
-            "interpretation": "Technical QC only. No biological identity, cohort aggregation, unmixing, calibrated lifetime, or inferential result.",
-            "canonical_source_sha256": {name: _sha256(source_dir / name) for name in ("clinical_roi_hs_flim.py", "clinical_roi_hyperspectral.py")},
-            "tool_versions": tools,
-        }
-        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n")
-        bands_path = tables / "native_spectral_band_audit.csv"
-        bands.to_csv(bands_path, index=False)
-        moments_path = objects / "native_spectral_moments.npz"
         import numpy as np
-        np.savez_compressed(moments_path, moments=moments)
-        inventory_event = StageEvent(stage_id="hs_native_inventory", status="SUCCEEDED", message="Native source, band audit, grid, and resource metadata recorded", tool_versions=tools, parameters=params, artifacts=[str(metadata_path), str(bands_path)])
-        emit(inventory_event)
-        events[-1] = inventory_event
-        artifacts.extend(inventory_event.artifacts)
-        moment_event = StageEvent(stage_id="hs_native_moments", status="SUCCEEDED", message="Canonical native intensity and two-harmonic moment maps saved", tool_versions=tools, parameters={"native_shape_yx": native_metadata["native_shape_yx"], "channel_count": native_metadata["channel_count"], "max_working_bytes": params["max_working_bytes"]}, artifacts=[str(moments_path)])
-        emit(moment_event)
-        events.append(moment_event)
-        artifacts.append(str(moments_path))
+
+        if stage_id == "hs_native_moments":
+            for directory in (root, objects, tables):
+                directory.mkdir(parents=True, exist_ok=True)
+            source_path = Path(params["input_files"][0])
+            source_dir = _source_dir()
+            if _stat_signature(source_path) != params["input_stat"][str(source_path)]:
+                raise ValueError("Native CZI changed after preflight; submit a fresh run.")
+            source_sha256 = _sha256(source_path)
+            if _stat_signature(source_path) != params["input_stat"][str(source_path)]:
+                raise ValueError("Native CZI changed while source hashing was in progress.")
+            params["input_sha256"] = {str(source_path): source_sha256}
+            tools = _versions()
+            moments, bands, native_metadata = _reader().read_native_hs_moments(source_path, max_working_bytes=params["max_working_bytes"])
+            metadata_path = root / "native_source_metadata.json"
+            metadata = {
+                "workflow_id": WORKFLOW_ID,
+                "source_path": str(source_path),
+                "source_sha256": source_sha256,
+                "source_stat": params["input_stat"][str(source_path)],
+                "native_metadata": native_metadata,
+                "moment_names": ["intensity_sum", "h1_real_weighted_sum", "h1_imag_weighted_sum", "h2_real_weighted_sum", "h2_imag_weighted_sum"],
+                "interpretation": "Technical QC only. No biological identity, cohort aggregation, unmixing, calibrated lifetime, or inferential result.",
+                "canonical_source_sha256": {name: _sha256(source_dir / name) for name in ("clinical_roi_hs_flim.py", "clinical_roi_hyperspectral.py")},
+                "tool_versions": tools,
+            }
+            metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n")
+            bands_path = tables / "native_spectral_band_audit.csv"
+            bands.to_csv(bands_path, index=False)
+            moments_path = objects / "native_spectral_moments.npz"
+            np.savez_compressed(moments_path, moments=moments)
+            artifacts = [str(metadata_path), str(bands_path), str(moments_path)]
+            event = StageEvent(stage_id=stage_id, status="SUCCEEDED", message="Native source metadata, band audit, and canonical spectral moment maps saved", tool_versions=tools, parameters=params, artifacts=artifacts)
+            emit(event)
+            return WorkflowResult(status="SUCCEEDED", stages=[event], artifacts=artifacts, warnings=warnings, state={"parameters": params, "metadata_path": str(metadata_path), "moments_path": str(moments_path)})
+
+        diagnostics.mkdir(parents=True, exist_ok=True)
+        metadata = json.loads(Path(dependency.state["metadata_path"]).read_text())
+        with np.load(Path(dependency.state["moments_path"]), allow_pickle=False) as saved:
+            moments = saved["moments"]
+        tools = metadata["tool_versions"]
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
@@ -302,19 +315,17 @@ def execute(request: RunRequest, emit: WorkflowEmitter) -> WorkflowResult:
                 spine.set_linewidth(0.5)
         fig.savefig(phasor_pdf)
         plt.close(fig)
-        plot_event = StageEvent(stage_id="hs_native_qc_plots", status="SUCCEEDED", message="Technical intensity and H1/H2 phasor-density PDFs rendered from source-bound native moments", tool_versions=tools, parameters={"plot_interpretation": "technical QC only", "density_bins_per_axis": 160}, artifacts=[str(intensity_pdf), str(phasor_pdf)])
-        emit(plot_event)
-        events.append(plot_event)
-        artifacts.extend(plot_event.artifacts)
+        artifacts = [str(intensity_pdf), str(phasor_pdf)]
         receipt_path = root / "adapter_receipt.json"
-        metadata["artifacts"] = sorted(set(artifacts))
+        metadata["artifacts"] = sorted(set(dependency.artifacts + artifacts))
         metadata["parameters"] = params
         receipt_path.write_text(json.dumps(metadata, indent=2, sort_keys=True, default=str) + "\n")
         artifacts.append(str(receipt_path))
-        return WorkflowResult(status="SUCCEEDED", stages=events, artifacts=sorted(set(artifacts)), warnings=warnings)
+        event = StageEvent(stage_id=stage_id, status="SUCCEEDED", message="Technical intensity and H1/H2 phasor-density PDFs rendered from source-bound native moments", tool_versions=tools, parameters={"plot_interpretation": "technical QC only", "density_bins_per_axis": 160}, artifacts=artifacts)
+        emit(event)
+        return WorkflowResult(status="SUCCEEDED", stages=[event], artifacts=artifacts, warnings=warnings)
     except Exception as exc:
         message = f"{type(exc).__name__}: {exc}"
-        failed = StageEvent(stage_id="hs_native_execution", status="FAILED", message=message, parameters=params)
+        failed = StageEvent(stage_id=stage_id, status="FAILED", message=message, parameters=params)
         emit(failed)
-        events.append(failed)
-        return WorkflowResult(status="FAILED", stages=events, artifacts=sorted(set(artifacts)), warnings=warnings + [message])
+        return WorkflowResult(status="FAILED", stages=[failed], warnings=warnings + [message])

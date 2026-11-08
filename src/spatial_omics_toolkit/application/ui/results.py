@@ -648,6 +648,9 @@ def _render_results(run_dir: Path) -> None:
             st.markdown(f"**{selected['path'].name}**")
             st.caption(f"{selected['stage_label']} · {selected['kind']} · recorded in {' and '.join(sorted(selected['sources']))}")
             show_artifact(str(selected["path"]), run_dir, selected["status"], key_prefix=f"results_{run_dir.resolve()}")
+            from spatial_omics_toolkit.application.ui.plotting import render_plot_controls
+
+            render_plot_controls(selected["path"], run_dir, ALLOWED_ROOT)
 
             def source_matches(record: dict[str, Any]) -> bool:
                 source_text = str(record["metadata"].get("source_pdf", ""))

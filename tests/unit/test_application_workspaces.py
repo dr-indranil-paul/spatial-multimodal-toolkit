@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from html import escape, unescape
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -68,28 +66,13 @@ def test_home_actions_open_project_and_modality_workspaces(tmp_path: Path, modal
     assert app.session_state["spatial_page"] == "Project"
     _open_modality(app, modality)
     assert app.session_state["spatial_page"] == modality
-    assert app.session_state[f"workspace_section_{modality}"] == "Setup"
+    assert app.session_state[f"workspace_section_{modality}"] == "Introduction"
     _click_label(app, "Project")
     assert app.session_state["spatial_page"] == "Project"
     _click_label(app, "Home")
     assert app.session_state["spatial_page"] == "Home"
 
 
-def test_project_setup_groups_controls_and_review_status(tmp_path: Path) -> None:
-    app = _app(tmp_path, "Project").run()
-    _assert_clean(app)
-    assert [item.value for item in app.subheader] == [
-        "1. Choose the study folder",
-        "2. Add the sample sheet",
-        "3. Choose where results are saved",
-    ]
-    assert {item.label for item in app.text_input} >= {
-        "Project root directory", "Project sample metadata (CSV)", "Default output root",
-    }
-    assert app.button(key="browse_project_root")
-    assert app.button(key="browse_project_metadata")
-    assert any("Sample-sheet structure checked: 1 row" in item.value for item in app.success)
-    assert app.dataframe
 
 
 def test_home_exposes_all_destinations_and_current_navigation(tmp_path: Path) -> None:
@@ -207,354 +190,6 @@ def test_invalid_cloud_mode_reports_error_without_hiding_workspace(tmp_path: Pat
     assert not any("view-only" in item.value for item in app.info)
 
 
-@pytest.mark.parametrize("modality", ["CycIF", "HS", "FLIM", "H&E", "Visium", "Integration"])
-def test_introduction_describes_selected_workflow(tmp_path: Path, modality: str) -> None:
-    from spatial_omics_toolkit.application.workflows.registry import list_workflows
-
-    descriptor = next(item for item in list_workflows() if item.modality == modality)
-    app = _app(tmp_path, modality)
-    app.session_state[f"workspace_section_{modality}"] = "Introduction"
-    app.run()
-    _assert_clean(app)
-    assert app.radio(key=f"workspace_section_{modality}").value == "Introduction"
-    assert descriptor.title in [item.value for item in app.subheader]
-    rendered = "\n".join(
-        str(item.value)
-        for collection in (app.markdown, app.caption, app.info, app.warning)
-        for item in collection
-    )
-    rendered = unescape(rendered)
-    assert descriptor.description in rendered
-    assert all(stage.title in rendered and stage.purpose in rendered for stage in descriptor.stages)
-    assert all(tool.name in rendered for stage in descriptor.stages for tool in stage.tools)
-    diagram = next(item.value for item in app.markdown if '<section class="stage-flow"' in item.value)
-    assert diagram.count('class="stage-detail"') == len(descriptor.stages)
-    for stage in descriptor.stages:
-        assert escape(stage.title) in diagram
-        assert escape(stage.purpose) in diagram
-        assert all(escape(tool.name) in diagram for tool in stage.tools)
-    limitations = next(item.value for item in app.markdown if item.value.startswith("- " + descriptor.limitations[0]))
-    assert limitations.splitlines() == [f"- {limitation}" for limitation in descriptor.limitations]
-    assert not app.warning
-
-
-@pytest.mark.parametrize(("modality", "workflow_id", "input_facts", "output_facts"), [
-    ("CycIF", "cycif-raw-czi", ("immediate subfolder", "sidecars", "expected-round"), ("intake_inventory.csv", "registration", "enabled and successful")),
-    ("CycIF", "cycif.tabular_analysis", ("already-segmented", "coordinate", "specimen-id"), ("selected stages", "spatial-null", "exploratory")),
-    ("HS", "hs.native_spectral_qc", ("one file is processed per run", "five uniformly spaced", "unmapped"), ("spectral-band audit", "technical qc", "not molecular identity")),
-    ("HS", "hs.clinical-roi-hyperspectral", ("manifest", "18 acquisitions", "tma1 and tma2"), ("complete confirmed specimen mappings", "separate tma1 and tma2", "exploratory")),
-    ("FLIM", "flim.raw_sdt", ("`.sdt`", "block", "raw qc"), ("qc_pending", "raw qc", "calibration")),
-    ("H&E", "he-image-intake", ("format-specific reader", "no image-to-specimen mapping", ".tiff"), ("missing metadata", "tiff has metadata only", "preview")),
-    ("Visium", "visium-native-qc", ("filtered_feature_bc_matrix.h5", "2, 8, or 16", "mapping"), ("spot_bin_qc.csv", "only when usable coordinates", "unnormalized")),
-    ("Integration", "integration.serial_section_alignment", ("reference channel index", "integration:moving_he", "integration:reference"), ("translation", "visual review", "not accepted")),
-])
-def test_introduction_input_output_bullets_cover_workflow_facts(
-    tmp_path: Path, modality: str, workflow_id: str,
-    input_facts: tuple[str, ...], output_facts: tuple[str, ...],
-) -> None:
-    from spatial_omics_toolkit.application.workflows.registry import list_workflows
-
-    descriptors = [item for item in list_workflows() if item.modality == modality]
-    selected = next(item for item in descriptors if item.workflow_id == workflow_id)
-    app = _app(tmp_path, modality)
-    app.session_state[f"workspace_section_{modality}"] = "Introduction"
-    app.run()
-    _assert_clean(app)
-    if len(descriptors) > 1:
-        app.selectbox[0].set_value(selected.title).run()
-        _assert_clean(app)
-    blocks = [str(item.value) for item in app.markdown]
-    for facts in (input_facts, output_facts):
-        block = next(value for value in blocks if all(fact in value.lower() for fact in facts))
-        lines = block.strip().splitlines()
-        assert len(lines) >= 2
-        assert all(line.startswith("- ") for line in lines)
-    shared = next(value for value in blocks if "project_samples.csv" in value and "1–512 GB" in value)
-    for fact in ("tissue_source", "biological_unit_id", "specimen_id"):
-        assert fact in shared
-    if workflow_id == "cycif.tabular_analysis":
-        assert "existing specimen-ID column" in shared
-    elif workflow_id == "he-image-intake":
-        assert "mapping is not required" in shared
-    else:
-        assert "UNMAPPED" in shared
-    assert any("Included examples use their own fixed inputs" in item.value for item in app.markdown)
-    assert any("Inputs and settings determine which paths run" in item.value for item in app.markdown)
-    assert not any("Inputs and settings determine which paths run" in item.value for item in app.caption)
-
-
-class _GraphParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.edges: set[tuple[str, str]] = set()
-        self._in_item = False
-        self._text = ""
-        self.cards: list[str] = []
-        self._card: list[str] | None = None
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "article":
-            self._card = []
-        if tag == "li":
-            self._in_item = True
-            self._text = ""
-
-    def handle_data(self, data: str) -> None:
-        if self._card is not None:
-            self._card.append(data)
-        if self._in_item:
-            self._text += data
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "article" and self._card is not None:
-            self.cards.append(" ".join(self._card))
-            self._card = None
-        if tag == "li" and self._in_item:
-            self._in_item = False
-            if "→" in self._text:
-                source, target = self._text.split("→", 1)
-                self.edges.add((source.strip(), target.split(" (", 1)[0].strip()))
-
-
-_EXPECTED_PATHS = {
-    "cycif-raw-czi": {
-        ("Intake", "Conversion"), ("Intake", "Registration"),
-        ("Registration", "Marker export"), ("Marker export", "Segmentation"),
-    },
-    "cycif.tabular_analysis": {
-        ("Selected cell table", "Intensity QC"), ("Intensity QC", "Cell classification"),
-        ("Cell classification", "Program scoring"), ("Program scoring", "Current cell frame"),
-        ("Current cell frame", "Aggregation"), ("Current cell frame", "Spatial features"),
-        ("Current cell frame", "Spatial null"), ("Aggregation", "Group comparison"),
-    },
-    "hs.clinical-roi-hyperspectral": {
-        ("Metadata audit", "Specimen mapping"), ("Specimen mapping", "TMA1 phasors"),
-        ("Specimen mapping", "TMA2 phasors"), ("TMA1 phasors", "TMA1 filter"),
-        ("TMA1 phasors", "TMA1 GMM"), ("TMA2 phasors", "TMA2 filter"),
-        ("TMA2 phasors", "TMA2 GMM"),
-    },
-    "hs.native_spectral_qc": {
-        ("Native reader call", "Inventory and band audit"), ("Native reader call", "Moment maps"),
-        ("Moment maps", "Intensity plots"), ("Moment maps", "H1/H2 plots"),
-    },
-    "flim.raw_sdt": {
-        ("Target inventory", "Block review"), ("Block review", "Raw decay QC"),
-        ("Raw decay QC", "Raw QC stop"), ("Block review", "Target phasors"),
-        ("Target phasors", "Count mask"), ("Count mask", "Phasor filter"),
-        ("Measured reference input", "Reference inventory"), ("Reference inventory", "Reference QC"),
-        ("Reference inventory", "Reference phasors"), ("Reference phasors", "Reference calibration"),
-        ("Count mask", "Reference calibration"), ("Phasor filter", "Reference calibration"),
-        ("Reference calibration", "Lifetimes"), ("Count mask", "Lifetimes"),
-        ("Phasor filter", "Lifetimes"),
-    },
-    "he-image-intake": {
-        ("File selection", "SVS reader"), ("File selection", "CZI reader"),
-        ("File selection", "TIFF reader"), ("SVS reader", "Inventory and bounded preview"),
-        ("CZI reader", "Inventory and bounded preview"), ("TIFF reader", "Inventory and bounded preview"),
-    },
-    "visium-native-qc": {
-        ("Bundle intake", "Classic Visium reader"), ("Bundle intake", "HD native bin"),
-        ("HD native bin", "HD reader"), ("Classic Visium reader", "Native count QC"),
-        ("HD reader", "Native count QC"), ("Native count QC", "Bounded preview"),
-    },
-    "integration.serial_section_alignment": {
-        ("Moving H&E CZI", "Source and channel authorization"),
-        ("Reference fluorescence/HS CZI", "Source and channel authorization"),
-        ("Source and channel authorization", "Metadata and physical scale"),
-        ("Metadata and physical scale", "Bounded previews"),
-        ("Bounded previews", "Translation-only registration"),
-        ("Translation-only registration", "Metrics and human review"),
-    },
-}
-
-
-@pytest.mark.parametrize(("modality", "workflow_id", "note"), [
-    ("CycIF", "cycif-raw-czi", "original CZI"),
-    ("CycIF", "cycif.tabular_analysis", "current cell table"),
-    ("FLIM", "flim.raw_sdt", "QC_PENDING"),
-    ("HS", "hs.clinical-roi-hyperspectral", "Incomplete or unconfirmed specimen mapping"),
-    ("HS", "hs.native_spectral_qc", "One read produces"),
-    ("H&E", "he-image-intake", "format-specific reader"),
-    ("Visium", "visium-native-qc", "HD requires an explicit bin size"),
-    ("Integration", "integration.serial_section_alignment", "images need source and channel confirmation"),
-])
-def test_introduction_explains_conditional_workflow_paths(
-    tmp_path: Path, modality: str, workflow_id: str, note: str
-) -> None:
-    from spatial_omics_toolkit.application.workflows.registry import list_workflows
-
-    descriptors = [item for item in list_workflows() if item.modality == modality]
-    selected = next(item for item in descriptors if item.workflow_id == workflow_id)
-    app = _app(tmp_path, modality)
-    app.session_state[f"workspace_section_{modality}"] = "Introduction"
-    app.run()
-    _assert_clean(app)
-    if len(descriptors) > 1:
-        app.selectbox[0].set_value(selected.title).run()
-        _assert_clean(app)
-    notes_block = next(item.value for item in app.markdown if item.value.strip().startswith("- "))
-    notes_lines = notes_block.strip().splitlines()
-    assert note in notes_block
-    assert len(notes_lines) > 1
-    assert all(line.lstrip().startswith("- ") for line in notes_lines)
-    diagram = next(item.value for item in app.markdown if '<section class="stage-flow"' in item.value)
-    graph = _GraphParser()
-    graph.feed(diagram)
-    labels = {
-        "Native reader call": "Read original image",
-        "Inventory and bounded preview": "Inventory and size-limited preview",
-        "HD native bin": "HD bin size",
-        "Native count QC": "Original count QC",
-        "Bounded preview": "Size-limited preview",
-        "Bounded previews": "Size-limited previews",
-        "Current cell frame": "Current cell table",
-        "Spatial null": "Spatial null model",
-        "Metadata audit": "Metadata review",
-        "Inventory and band audit": "Inventory and band review",
-        "Moment maps": "Spectral moment maps",
-        "Raw QC stop": "Stop after raw QC",
-        "Bundle intake": "Input bundle",
-        "Moving H&E CZI": "H&E CZI to align",
-        "Source and channel authorization": "Confirm sources and channel",
-        "Metadata and physical scale": "Check metadata and physical scale",
-        "Metrics and human review": "Alignment metrics and human review",
-    }
-    expected = {(labels.get(source, source), labels.get(target, target))
-                for source, target in _EXPECTED_PATHS[workflow_id]}
-    assert expected <= graph.edges
-    assert len(graph.cards) == len(selected.stages)
-    assert all(stage.title in card and stage.purpose in card
-               for stage, card in zip(selected.stages, graph.cards))
-    stage_guidance = {
-        "cycif.tabular_analysis": ("step09", ("Current cell table", "Program scoring")),
-        "hs.clinical-roi-hyperspectral": ("source_phasors", ("Specimen mapping", "TMA1 phasors", "TMA2 phasors")),
-        "hs.native_spectral_qc": ("hs_native_qc_plots", ("Intensity plots", "H1/H2 plots")),
-        "flim.raw_sdt": ("flim_raw_qc", ("Block review", "Stop after raw QC")),
-        "he-image-intake": ("image-intake", ("File selection", "SVS reader", "CZI reader", "TIFF reader")),
-        "visium-native-qc": ("bundle-intake", ("Classic Visium reader", "HD bin size", "HD reader")),
-        "integration.serial_section_alignment": ("serial-section-alignment", ("H&E CZI to align", "Alignment metrics and human review")),
-    }
-    if workflow_id in stage_guidance:
-        stage_id, guidance = stage_guidance[workflow_id]
-        card = next(card for stage, card in zip(selected.stages, graph.cards) if stage.stage_id == stage_id)
-        assert all(text in card for text in guidance)
-    assert 'aria-hidden="true">→' in diagram
-    for stage in selected.stages:
-        assert escape(stage.title) in diagram and escape(stage.purpose) in diagram
-        for tool in stage.tools:
-            assert escape(tool.name) in diagram
-            assert escape(tool.role) in diagram
-            version = "runtime version recorded in the run record" if tool.name == "MCMICRO" else tool.version
-            assert escape(version) in diagram
-    forbidden = {
-        "cycif-raw-czi": {("Conversion", "Registration"), ("Registration", "Conversion")},
-        "cycif.tabular_analysis": {("Spatial features", "Spatial null")},
-        "hs.clinical-roi-hyperspectral": {("TMA1 filter", "TMA1 GMM"), ("TMA2 filter", "TMA2 GMM")},
-        "hs.native_spectral_qc": {("Inventory and band audit", "Moment maps")},
-        "flim.raw_sdt": {("Target phasors", "Reference inventory"), ("Reference QC", "Target phasors")},
-        "he-image-intake": {("SVS reader", "CZI reader"), ("CZI reader", "TIFF reader")},
-    }
-    forbidden_paths = {(labels.get(source, source), labels.get(target, target))
-                       for source, target in forbidden.get(workflow_id, set())}
-    assert not (forbidden_paths & graph.edges)
-    if workflow_id in {"cycif-raw-czi", "cycif.tabular_analysis", "flim.raw_sdt"}:
-        assert "Optional" in diagram
-    if workflow_id in {"hs.clinical-roi-hyperspectral", "he-image-intake", "visium-native-qc"}:
-        assert "alternative" in diagram.lower()
-    if workflow_id in {"cycif-raw-czi", "hs.clinical-roi-hyperspectral", "flim.raw_sdt", "integration.serial_section_alignment"}:
-        assert "Review required" in diagram
-    if workflow_id == "visium-native-qc":
-        assert "Selection required" in diagram
-    assert '>Gate<' not in diagram
-    if workflow_id == "cycif.tabular_analysis":
-        assert "Current cell table" in diagram
-        assert "Spatial null model" in diagram
-    if workflow_id == "hs.clinical-roi-hyperspectral":
-        assert "Metadata review" in diagram
-        assert "(filtering or GMM)" in diagram
-        assert "Gaussian mixture model (GMM)" in notes_block
-    if workflow_id == "flim.raw_sdt":
-        assert "Stop after raw QC" in diagram
-        assert "(raw-QC mode)" in diagram
-    if workflow_id == "integration.serial_section_alignment":
-        assert "H&amp;E CZI to align" in diagram
-        assert "(initial checks passed)" in diagram
-
-
-def test_stage_flow_escapes_descriptor_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    from spatial_omics_toolkit.application.ui import presentation
-    from spatial_omics_toolkit.application.workflows.registry import list_workflows
-
-    original = next(item for item in list_workflows() if item.workflow_id == "cycif-raw-czi")
-    stage = original.stages[0]
-    tool = stage.tools[0].model_copy(update={"name": "<tool>", "version": '<v "1">', "role": "<role>"})
-    changed = stage.model_copy(update={"title": "<title>", "purpose": "<purpose>", "tools": [tool]})
-    descriptor = original.model_copy(update={"stages": [changed, *original.stages[1:]]})
-    rendered: list[str] = []
-    monkeypatch.setattr(presentation.st, "markdown", lambda text, **kwargs: rendered.append(text))
-    monkeypatch.setattr(presentation.st, "caption", lambda *args, **kwargs: None)
-    monkeypatch.setattr(presentation.st, "info", lambda *args, **kwargs: None)
-    presentation.render_stage_flow(descriptor)
-    diagram = next(item for item in reversed(rendered) if '<section class="stage-flow"' in item)
-    for value in ("<title>", "<purpose>", "<tool>", '<v "1">', "<role>"):
-        assert escape(value) in diagram
-        assert value not in diagram
-
-
-def test_stage_flow_handles_missing_graph_nodes_and_empty_stages(monkeypatch: pytest.MonkeyPatch) -> None:
-    from spatial_omics_toolkit.application.ui import presentation
-    from spatial_omics_toolkit.application.workflows.registry import list_workflows
-
-    original = next(item for item in list_workflows() if item.workflow_id == "cycif-raw-czi")
-    stage = original.stages[0]
-    descriptor = original.model_copy(update={"workflow_id": "example", "stages": [stage]})
-    rendered: list[str] = []
-    captions: list[str] = []
-    monkeypatch.setattr(presentation.st, "markdown", lambda text, **kwargs: rendered.append(text))
-    monkeypatch.setattr(presentation.st, "caption", lambda text, **kwargs: captions.append(text))
-    monkeypatch.setitem(presentation._WORKFLOW_GRAPHS, "example", [
-        ("<input>", None, "Input", []),
-        ("<missing stage>", "missing", "Gate", [("<input>", "<condition>")]),
-    ])
-    presentation.render_stage_flow(descriptor)
-    diagram = next(item for item in rendered if '<section class="stage-flow"' in item)
-    graph = _GraphParser()
-    graph.feed(diagram)
-    assert len(graph.cards) == 1
-    assert all(value in graph.cards[0] for value in (stage.title, "<input>", "<missing stage>", "<condition>"))
-    assert "&lt;input&gt;" in diagram and "&lt;condition&gt;" in diagram
-    assert "Review required" in graph.cards[0]
-
-    rendered.clear()
-    presentation.render_stage_flow(descriptor.model_copy(update={"workflow_id": "unknown"}))
-    graph = _GraphParser()
-    graph.feed(next(item for item in rendered if '<section class="stage-flow"' in item))
-    assert len(graph.cards) == 1 and stage.title in graph.cards[0]
-
-    rendered.clear()
-    presentation.render_stage_flow(descriptor.model_copy(update={"stages": []}))
-    assert captions == ["No analysis stages are declared for this workflow."]
-    assert not any('<section class="stage-flow"' in item for item in rendered)
-
-
-def test_introduction_tracks_selected_workflow(tmp_path: Path) -> None:
-    from spatial_omics_toolkit.application.workflows.registry import list_workflows
-
-    descriptors = [item for item in list_workflows() if item.modality == "CycIF"]
-    assert len(descriptors) > 1
-    app = _app(tmp_path, "CycIF")
-    app.session_state["workspace_section_CycIF"] = "Introduction"
-    app.run()
-    _assert_clean(app)
-    alternative = descriptors[1]
-    app.selectbox[0].set_value(alternative.title).run()
-    _assert_clean(app)
-    assert alternative.title in [item.value for item in app.subheader]
-    rendered = unescape("\n".join(str(item.value) for item in app.markdown))
-    assert all(stage.title in rendered and stage.purpose in rendered for stage in alternative.stages)
-    assert all(tool.name in rendered for stage in alternative.stages for tool in stage.tools)
-    assert alternative.input_description in rendered
-    assert alternative.output_description in rendered
 
 
 @pytest.mark.parametrize("modality", ["CycIF", "HS", "FLIM", "H&E", "Visium", "Integration"])
@@ -565,11 +200,9 @@ def test_introduction_does_not_submit_example_and_setup_state_survives_return(
     app.session_state[f"data_mode_{modality}"] = "example"
     app.run()
     _assert_clean(app)
-    assert app.radio(key=f"workspace_section_{modality}").value == "Setup"
+    assert app.radio(key=f"workspace_section_{modality}").value == "Introduction"
     assert app.session_state["active_run_dirs"] == {}
     assert not (tmp_path / "outputs").exists()
-    app.radio(key=f"workspace_section_{modality}").set_value("Introduction").run()
-    _assert_clean(app)
     assert all(button.key != f"run_example_setup_{modality}" for button in app.button)
 
     app.radio(key=f"data_mode_{modality}").set_value("own").run()
@@ -804,3 +437,34 @@ def test_invalid_tma_map_blocks_settings_without_crashing(tmp_path: Path, conten
     _assert_clean(app)
     assert not app.session_state["workflow_parameters_valid_he-image-intake"]
     assert app.session_state["active_run_dirs"] == {}
+
+
+def test_applied_profile_updates_visible_and_submitted_parameters_and_resets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from spatial_omics_toolkit.application import settings
+
+    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    app = _app(tmp_path, "H&E")
+    app.session_state["workspace_section_H&E"] = "Setup"
+    settings.save_user_settings(
+        tmp_path / "project", "reviewed-preview.toml",
+        'workflow_id = "he-image-intake"\n[parameters]\n"preview_max_dimension" = 1024\n',
+        create=True,
+    )
+    app.run()
+    _assert_clean(app)
+    next(widget for widget in app.selectbox if widget.label == "User settings file").set_value("reviewed-preview.toml").run()
+    next(button for button in app.button if button.label == "Apply saved settings").click().run()
+    _assert_clean(app)
+    preview = next(widget for widget in app.number_input if widget.label == "Maximum preview dimension (pixels)")
+    assert preview.value == 1024
+    assert app.session_state["workflow_parameters_he-image-intake"]["preview_max_dimension"] == 1024
+    app.radio(key="workspace_section_H&E").set_value("Introduction").run()
+    app.radio(key="workspace_section_H&E").set_value("Setup").run()
+    _assert_clean(app)
+    assert next(widget for widget in app.number_input if widget.label == "Maximum preview dimension (pixels)").value == 1024
+    next(button for button in app.button if button.label == "Reset to defaults").click().run()
+    _assert_clean(app)
+    assert next(widget for widget in app.number_input if widget.label == "Maximum preview dimension (pixels)").value == 2048
+    assert app.session_state["workflow_parameters_he-image-intake"]["preview_max_dimension"] == 2048

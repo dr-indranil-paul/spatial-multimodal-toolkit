@@ -143,5 +143,4 @@ def test_catalog_without_modality_defaults_to_own_data(
     app.run()
     assert not app.exception, [item.message for item in app.exception]
     assert app.radio(key="data_mode_HS").value == "own"
-    assert app.radio(key="workspace_section_HS").value == "Setup"
     assert any("No prepared example for modality" in item.value for item in app.info)

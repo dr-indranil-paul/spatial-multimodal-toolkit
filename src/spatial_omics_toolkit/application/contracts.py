@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-StageStatus = Literal["CREATED", "RUNNING", "SUCCEEDED", "REUSED", "WARNING", "FAILED", "BLOCKED", "QC_PENDING"]
+StageStatus = Literal["CREATED", "RUNNING", "SUCCEEDED", "REUSED", "SKIPPED", "WARNING", "FAILED", "BLOCKED", "QC_PENDING"]
 
 
 class RunRequest(BaseModel):
@@ -68,6 +68,10 @@ class StageDefinition(BaseModel):
     tools: list[ToolReference] = Field(default_factory=list)
     implementations: list[FunctionReference] = Field(default_factory=list)
     event_stage_ids: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    condition: str = ""
+    inputs: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
 
 class WorkflowDescriptor(BaseModel):
     workflow_id: str
@@ -103,6 +107,7 @@ class WorkflowResult(BaseModel):
     artifacts: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     review_request: dict[str, Any] | None = None
+    state: dict[str, Any] = Field(default_factory=dict)
 
 
 WorkflowEmitter = Callable[[StageEvent], None]
