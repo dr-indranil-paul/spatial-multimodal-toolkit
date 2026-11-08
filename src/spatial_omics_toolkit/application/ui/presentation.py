@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from graphlib import TopologicalSorter
 from html import escape
+import re
+import subprocess
+from textwrap import wrap
 from urllib.parse import urlsplit
 
 import streamlit as st
@@ -716,76 +719,89 @@ def render_modality_banner(modality: str, descriptor: WorkflowDescriptor) -> Non
 
 
 def _stage_graph(descriptor: WorkflowDescriptor) -> str:
-    """Build a fixed-scale, scrollable diagram from the execution DAG."""
-    stage_indexes = {stage.stage_id: index for index, stage in enumerate(descriptor.stages)}
-    if len(stage_indexes) != len(descriptor.stages):
+    """Render the execution DAG at a fixed, application-matched text scale."""
+    stages = descriptor.stages
+    indexes = {stage.stage_id: index for index, stage in enumerate(stages)}
+    if len(indexes) != len(stages):
         raise ValueError("Workflow stages must have unique IDs.")
-    dependencies = {stage.stage_id: stage.depends_on for stage in descriptor.stages}
-    for stage in descriptor.stages:
+    dependencies = {stage.stage_id: stage.depends_on for stage in stages}
+    for stage in stages:
         for dependency in stage.depends_on:
-            if dependency not in stage_indexes:
+            if dependency not in indexes:
                 raise ValueError(f"Unknown workflow stage dependency: {dependency}")
+    tuple(TopologicalSorter(dependencies).static_order())
 
-    depths: dict[str, int] = {}
-    for stage_id in TopologicalSorter(dependencies).static_order():
-        depths[stage_id] = max((depths[item] + 1 for item in dependencies[stage_id]), default=0)
-    rows: dict[int, int] = {}
-    positions: dict[str, tuple[int, int]] = {}
-    for stage in descriptor.stages:
-        depth = depths[stage.stage_id]
-        row = rows.get(depth, 0)
-        rows[depth] = row + 1
-        positions[stage.stage_id] = (24 + depth * 340, 24 + row * 190)
+    def label_lines(value: str, width: int) -> str:
+        lines = [line for paragraph in value.split("\n")
+                 for line in (wrap(paragraph, width=width, break_long_words=True,
+                                   break_on_hyphens=False) or [""])]
+        return '<BR ALIGN="LEFT"/>'.join(escape(line, quote=True) for line in lines)
 
-    width = max((x for x, _ in positions.values()), default=24) + 284
-    height = max((y for _, y in positions.values()), default=24) + 166
-    edges: list[str] = []
-    for index, stage in enumerate(descriptor.stages):
-        x2, y2 = positions[stage.stage_id]
-        for dependency in stage.depends_on:
-            x1, y1 = positions[dependency]
-            x1 += 260
-            y1 += 73
-            y2_center = y2 + 73
-            midpoint = (x1 + x2) // 2
-            edges.append(
-                f'<path data-source="{stage_indexes[dependency]}" data-target="{index}" '
-                f'd="M {x1} {y1} C {midpoint} {y1}, {midpoint} {y2_center}, {x2} {y2_center}" '
-                'marker-end="url(#workflow-diagram-arrow)"/>'
+    def label(fields: list[tuple[bool, str]], width: int) -> str:
+        rows = []
+        for heading, value in fields:
+            face = "Inter" if heading else "Source Sans"
+            # Graphviz rounds HTML font sizes; reserve space before applying exact CSS sizes.
+            size = "15" if heading else "14"
+            content = label_lines(value, width)
+            if heading:
+                content = f"<B>{content}</B>"
+            rows.append(
+                f'<TR><TD ALIGN="LEFT" BALIGN="LEFT"><FONT FACE="{face}" POINT-SIZE="{size}">'
+                f'{content}</FONT></TD></TR>'
             )
-    nodes: list[str] = []
-    for index, stage in enumerate(descriptor.stages):
-        x, y = positions[stage.stage_id]
-        tools = "; ".join(tool.name for tool in stage.tools)
-        nodes.append(
-            f'<article class="node" data-stage-index="{index}" style="left:{x}px;top:{y}px">'
-            f'<h3>{escape(stage.title)}</h3>'
-            + (f'<p><strong>Tools:</strong> {escape(tools)}</p>' if tools else "")
-            + ('<p class="condition">Conditional / review</p>' if stage.condition else "")
-            + '</article>'
-        )
+        return '<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="3">' + "".join(rows) + "</TABLE>>"
+
+    dot = [
+        'digraph workflow {',
+        'graph [rankdir=LR, bgcolor="transparent", pad="0.2", nodesep="0.45", ranksep="0.8"];',
+        'node [shape=box, style="rounded,filled", fillcolor="white", color="#a5b4fc", penwidth=1.5];',
+        'edge [color="#64748b", fontcolor="#1e293b", arrowsize=0.8];',
+    ]
+    for index, stage in enumerate(stages):
+        fields = [
+            (True, stage.title),
+            (False, f"Purpose: {stage.purpose}"),
+            *[(False, f"Tool: {tool.name} ({tool.version}) — {tool.role}") for tool in stage.tools],
+            (False, f"Inputs: {'; '.join(stage.inputs) or 'None declared'}"),
+            (False, f"Outputs: {'; '.join(stage.outputs) or 'None declared'}"),
+            (False, f"Condition / review: {stage.condition or 'None declared'}"),
+        ]
+        dot.append(f'n{index} [id="stage-{index}", label={label(fields, 38)}];')
+    for target, stage in enumerate(stages):
+        for dependency in stage.depends_on:
+            source = indexes[dependency]
+            upstream = stages[source]
+            fields = [
+                (False, f"Upstream outputs (when produced): {'; '.join(upstream.outputs) or 'None declared'}"),
+                (False, f"Downstream condition / review: {stage.condition or 'None declared'}"),
+            ]
+            dot.append(f'n{source} -> n{target} [id="edge-{source}-{target}", label={label(fields, 38)}];')
+    dot.append("}")
+    result = subprocess.run(
+        ["dot", "-Tsvg"], input="\n".join(dot), text=True, capture_output=True, check=True, timeout=60,
+    )
+    # Graphviz emits dimensions in points. Match CSS pixels to viewBox units so
+    # its SVG font sizes remain the same as the surrounding application.
+    svg = result.stdout[result.stdout.index("<svg "):]
+    root_end = svg.index(">")
+    root = svg[:root_end]
+    viewbox = re.search(r'viewBox="([^"]+)"', root)
+    if viewbox is None:
+        raise ValueError("Graphviz SVG is missing its viewBox")
+    _, _, width, height = viewbox.group(1).split()
+    root = re.sub(r'\bwidth="[^"]+"', f'width="{width}px"', root, count=1)
+    root = re.sub(r'\bheight="[^"]+"', f'height="{height}px"', root, count=1)
+    svg = root + ' role="img" aria-label="Workflow stages and directed dependencies"' + svg[root_end:]
     return f"""<div class="workflow-diagram"><style>
-.workflow-diagram, .workflow-diagram * {{ box-sizing: border-box; }}
-.workflow-diagram {{ color: #1e293b; font-size: 0.84rem; line-height: 1.45; }}
-.workflow-diagram .viewport {{ width: 100%; height: 500px; overflow: auto; border: 1px solid #e2e8f0;
-                             border-radius: 0.5rem; background: #f8fafc; }}
-.workflow-diagram .canvas {{ position: relative; width: {width}px; height: {height}px; }}
-.workflow-diagram svg {{ position: absolute; inset: 0; overflow: visible; }}
-.workflow-diagram path {{ fill: none; stroke: #64748b; stroke-width: 1.5; }}
-.workflow-diagram .node {{ position: absolute; width: 260px; height: 146px; overflow: auto; padding: 0.65rem 0.8rem;
-                         border: 1px solid #c7d2fe; border-left: 5px solid #a5b4fc; border-right: 5px solid #a5b4fc;
-                         border-radius: 0.5rem; background: #fff; overflow-wrap: anywhere; }}
-.workflow-diagram h3 {{ font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                        color: #0f172a; font-size: 0.92rem; font-weight: 700; line-height: 1.35;
-                        letter-spacing: -0.02em; margin: 0 0 0.35rem; }}
-.workflow-diagram p {{ font-family: "Source Sans", sans-serif; font-size: 0.84rem; line-height: 1.45; margin: 0 0 0.35rem; }}
-.workflow-diagram .condition {{ color: #4338ca; font-size: 0.8rem; }}
+.workflow-diagram .viewport {{ width:100%; height:500px; overflow:auto; border:1px solid #e2e8f0;
+                               border-radius:0.5rem; background:#f8fafc; }}
+.workflow-diagram svg {{ display:block; max-width:none; }}
+.workflow-diagram text[font-family="Source Sans"] {{ font-family:"Source Sans",sans-serif; font-size:13.44px; }}
+.workflow-diagram text[font-family="Inter"] {{ font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; font-size:14.72px; font-weight:700; }}
 </style>
 <div class="viewport" tabindex="0" role="region" aria-label="Workflow diagram; scroll to see all stages">
-<div class="canvas"><svg width="{width}" height="{height}" aria-hidden="true">
-<defs><marker id="workflow-diagram-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-<path d="M 0 0 L 10 5 L 0 10 z" style="fill:#64748b;stroke:none"/></marker></defs>
-{"".join(edges)}</svg>{"".join(nodes)}</div></div></div>"""
+{svg}</div></div>"""
 
 
 def render_stage_flow(descriptor: WorkflowDescriptor) -> None:
@@ -797,14 +813,14 @@ def render_stage_flow(descriptor: WorkflowDescriptor) -> None:
     if not descriptor.stages:
         st.caption("No analysis stages are declared for this workflow.")
         return
-    st.html(_stage_graph(descriptor))
-    st.caption("Scroll the diagram to see all stages. Expand the details for complete annotations.")
+    st.markdown(_stage_graph(descriptor), unsafe_allow_html=True)
+    st.caption("Scroll the diagram to see all stages and dependency annotations.")
     titles = {stage.stage_id: stage.title for stage in descriptor.stages}
     with st.expander("Workflow details (accessible text)"):
         for stage in descriptor.stages:
             dependencies = ", ".join(titles[item] for item in stage.depends_on) or "None"
             tools = "; ".join(
-                f"{tool.name} ({'runtime version recorded in the run record' if tool.name == 'MCMICRO' else tool.version}): {tool.role}"
+                f"{tool.name} ({tool.version}): {tool.role}"
                 for tool in stage.tools
             ) or "None declared"
             fields = (
