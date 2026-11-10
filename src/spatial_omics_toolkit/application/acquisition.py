@@ -248,8 +248,8 @@ def validate_acquisition_relationships(project_root: Path, workspace_root: Path,
             errors.append(f"Row {index}: relationship requires two distinct acquisition IDs")
         if left not in ids or right not in ids:
             errors.append(f"Row {index}: relationship references an unknown acquisition ID")
-        if row["relationship"] not in {"same", "serial", "unknown"}:
-            errors.append(f"Row {index}: relationship must be same, serial, or unknown")
+        if row["relationship"] not in {"same_section", "serial_section", "unknown"}:
+            errors.append(f"Row {index}: relationship must be same_section, serial_section, or unknown")
         if not row["evidence"]:
             errors.append(f"Row {index}: relationship evidence is required")
         if row["reviewed"] not in {"true", "false"}:
@@ -316,6 +316,9 @@ def discover_native_metadata(project_root: Path, workspace_root: Path, source_pa
     base = {"acquisition_id": acquisition_id, "modality": modality, "source_path": source_path, "specimen_id": "", "unit": "", "provenance": "native", "source_detail": f"{source.suffix.lower()} native header", "reviewed": "false"}
     values: dict[str, str] = {}
     units: dict[str, str] = {}
+    reason = ""
+    if source.suffix.lower() not in {".czi", ".tif", ".tiff", ".svs"}:
+        reason = f"unsupported suffix {source.suffix.lower()}; enter values manually or mark unknown"
     try:
         suffix = source.suffix.lower()
         if suffix == ".czi":
@@ -386,10 +389,14 @@ def discover_native_metadata(project_root: Path, workspace_root: Path, source_pa
                             units[key] = "um"
             finally:
                 slide.close()
-    except (ImportError, OSError, ValueError, RuntimeError, AttributeError, IndexError):
+    except ImportError as exc:
         values = {}
+        reason = f"reader unavailable: {exc.name or type(exc).__name__}"
+    except Exception as exc:
+        values = {}
+        reason = f"unreadable native file: {type(exc).__name__}"
     if not values:
         values["metadata_status"] = "unknown"
         base["provenance"] = "unknown"
-        base["source_detail"] = ""
+        base["source_detail"] = reason or "no recognized native header values"
     return [{**base, "field": field, "value": value, "unit": units.get(field, "")} for field, value in values.items()]

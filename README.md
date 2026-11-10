@@ -110,7 +110,7 @@ metadata. They document context only and are never passed to workflow adapters a
 parameters.
 
 Declare specimen and section relationships explicitly, including their evidence and
-whether sections are the same, serial, or unknown. A declaration, its review, and
+whether sections are the same_section, serial_section, or unknown. A declaration, its review, and
 acceptance of a spatial transform are separate decisions. Neither filenames nor an
 alignment preview establishes biological identity. Selecting modalities provides
 guidance on available combinations and missing prerequisites; it does not imply that

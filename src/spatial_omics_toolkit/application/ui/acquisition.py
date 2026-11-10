@@ -158,7 +158,7 @@ def _guidance_issues(
         issues.append("Relationship: missing or conflicting declaration/evidence for these acquisitions.")
     else:
         relation = relevant[0]
-        if relation.get("relationship") != "serial" or relation.get("reviewed") != "true" or not relation.get("evidence", "").strip():
+        if relation.get("relationship") != "serial_section" or relation.get("reviewed") != "true" or not relation.get("evidence", "").strip():
             issues.append("Relationship: a reviewed serial-section declaration with evidence is missing or unreviewed.")
     issues.append("Source authorization and exact reference channel index/name must be confirmed in Integration setup; this page cannot verify them.")
     return issues
@@ -308,11 +308,11 @@ def render_acquisition_information(
                 except (OSError, ValueError, ImportError) as exc:
                     st.error(f"Cannot inspect native metadata: {exc}")
     with relationship_tab:
-        st.caption("Record explicit evidence for same, serial, or unknown relationships between acquisition IDs. A reviewed relationship is a user declaration, not an alignment or proof of cell correspondence.")
+        st.caption("Record explicit evidence for same_section, serial_section, or unknown relationships between acquisition IDs. A reviewed relationship is a user declaration, not an alignment or proof of cell correspondence.")
         _editor(root, workspace, scope, "relationships", RELATIONSHIP_COLUMNS, relationships, relationship_errors,
                 partial(write_acquisition_relationships, annotation_csv=annotation))
     with guidance_tab:
-        st.markdown("- Run each modality's technical QC independently, even when acquisition information is incomplete.\n- Use project_samples.csv and external study records to review specimen identity; filenames and native metadata are not biological pairing.\n- Declare same or serial relationships only with evidence. Serial sections are not the same cells. A reviewed relationship is not acceptance of a transform.")
+        st.markdown("- Run each modality's technical QC independently, even when acquisition information is incomplete.\n- Use project_samples.csv and external study records to review specimen identity; filenames and native metadata are not biological pairing.\n- Declare same_section or serial_section relationships only with evidence. Serial sections are not the same cells. A reviewed relationship is not acceptance of a transform.")
         st.caption("This assessment uses saved, validated project records only, not unsaved edits. It does not enable or disable independent technical QC or the existing preview.")
         moving_modality = st.selectbox("Moving modality", ["H&E", "CycIF", "HS", "FLIM", "Visium"], key=f"{scope}_guide_moving_modality")
         reference_modality = st.selectbox("Reference modality", ["CycIF", "HS", "H&E", "FLIM", "Visium"], key=f"{scope}_guide_reference_modality")

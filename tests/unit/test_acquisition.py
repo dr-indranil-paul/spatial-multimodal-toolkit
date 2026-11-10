@@ -46,7 +46,7 @@ def test_optional_files_and_round_trip(tmp_path: Path) -> None:
     rows = [_row(), _row("b", "other.czi")]
     write_acquisition_metadata(project, tmp_path, rows)
     assert read_acquisition_metadata(project, tmp_path) == (rows, [])
-    relationships = [{"acquisition_id": "a", "related_acquisition_id": "b", "relationship": "serial", "evidence": "slide log", "reviewed": "true"}]
+    relationships = [{"acquisition_id": "a", "related_acquisition_id": "b", "relationship": "serial_section", "evidence": "slide log", "reviewed": "true"}]
     write_acquisition_relationships(project, tmp_path, relationships)
     assert read_acquisition_relationships(project, tmp_path) == (relationships, [])
 
@@ -77,12 +77,12 @@ def test_canonical_specimens_and_relationship_evidence(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Unknown project specimen_id"):
         write_acquisition_metadata(project, tmp_path, [{**_row(), "specimen_id": "not-in-sheet"}])
     write_acquisition_metadata(project, tmp_path, [_row(), _row("b", "other.czi")])
-    relation = {"acquisition_id": "a", "related_acquisition_id": "b", "relationship": "same", "evidence": "", "reviewed": "true"}
+    relation = {"acquisition_id": "a", "related_acquisition_id": "b", "relationship": "same_section", "evidence": "", "reviewed": "true"}
     with pytest.raises(ValueError, match="evidence"):
         write_acquisition_relationships(project, tmp_path, [relation])
     relation["evidence"] = "notebook entry"
     with pytest.raises(ValueError, match="duplicate or conflicting"):
-        write_acquisition_relationships(project, tmp_path, [relation, {**relation, "acquisition_id": "b", "related_acquisition_id": "a", "relationship": "serial"}])
+        write_acquisition_relationships(project, tmp_path, [relation, {**relation, "acquisition_id": "b", "related_acquisition_id": "a", "relationship": "serial_section"}])
     with pytest.raises(ValueError, match="unknown acquisition"):
         write_acquisition_relationships(project, tmp_path, [{**relation, "related_acquisition_id": "missing"}])
 
@@ -335,3 +335,15 @@ def test_custom_metadata_review_conflicts_and_unknown_provenance(tmp_path: Path)
         write_acquisition_metadata(project, tmp_path, [{**user, "source_detail": ""}])
     with pytest.raises(ValueError, match="unknown provenance"):
         write_acquisition_metadata(project, tmp_path, [{**unknown, "value": "measured"}])
+
+
+def test_discovery_states_why_native_metadata_is_unknown(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    (project / "flim.sdt").write_bytes(b"not parsed")
+    (project / "broken.tif").write_bytes(b"not a tiff")
+    unsupported = discover_native_metadata(project, tmp_path, "flim.sdt", "FLIM", "f")
+    assert [(row["field"], row["provenance"], row["value"]) for row in unsupported] == [("metadata_status", "unknown", "unknown")]
+    assert unsupported[0]["source_detail"] == "unsupported suffix .sdt; enter values manually or mark unknown"
+    unreadable = discover_native_metadata(project, tmp_path, "broken.tif", "H&E", "h")
+    assert unreadable[0]["provenance"] == "unknown"
+    assert unreadable[0]["source_detail"].startswith(("unreadable native file: ", "reader unavailable: "))
