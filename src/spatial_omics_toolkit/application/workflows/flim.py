@@ -24,10 +24,7 @@ from spatial_omics_toolkit.application.contracts import (
 )
 
 WORKFLOW_ID = "flim.raw_sdt"
-_CANONICAL_SCRIPTS = Path(
-    "/home/groups/EmiliLab/pauli/02_projects_current/02_spatial_proteomics/03_analysis/"
-    "01_exploratory_analysis/02_scripts"
-)
+_CANONICAL_SCRIPTS = Path(__file__).resolve().parents[2] / "external_scripts"
 
 
 def _source_dir() -> Path:
@@ -58,7 +55,7 @@ def _sources() -> tuple[Any, Any]:
     plots_path = directory / "clinical_roi_flim_plots.py"
     missing = [str(path) for path in (flim_path, plots_path) if not path.is_file()]
     if missing:
-        raise FileNotFoundError("Canonical FLIM source is unavailable: " + ", ".join(missing))
+        raise FileNotFoundError("Canonical FLIM source is unavailable: " + ", ".join(missing) + " (override the directory with SPATIAL_TOOLKIT_FLIM_SOURCE_DIR)")
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory))
     return _load_module("clinical_roi_flim", flim_path), _load_module("clinical_roi_flim_plots", plots_path)
@@ -214,7 +211,11 @@ def preflight(request: RunRequest) -> PreflightResult:
     source_directory = _source_dir()
     missing_sources = [name for name in ("clinical_roi_flim.py", "clinical_roi_flim_plots.py") if not (source_directory / name).is_file()]
     if missing_sources:
-        blockers.append("Canonical FLIM source is unavailable: " + ", ".join(str(source_directory / name) for name in missing_sources))
+        blockers.append(
+            "Canonical FLIM source is unavailable: "
+            + ", ".join(str(source_directory / name) for name in missing_sources)
+            + " (override the directory with SPATIAL_TOOLKIT_FLIM_SOURCE_DIR)"
+        )
     parameters = request.parameters
     analysis_scope = parameters.get("analysis_scope", "full")
     if analysis_scope not in {"raw_qc", "full"}:
