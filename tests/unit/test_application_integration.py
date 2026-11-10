@@ -48,7 +48,7 @@ def integration_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
                 image = ((x + y) * 100).astype(np.uint16)
             return image, "YX"
 
-    monkeypatch.setattr(integration, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     monkeypatch.setattr(integration, "_version", lambda _name: "test-installed")
     monkeypatch.setattr(integration, "_czi_reader", lambda: Reader)
     from spatial_omics_toolkit.application import plotting

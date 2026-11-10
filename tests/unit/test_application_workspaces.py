@@ -444,7 +444,7 @@ def test_applied_profile_updates_visible_and_submitted_parameters_and_resets(
 ) -> None:
     from spatial_omics_toolkit.application import settings
 
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     app = _app(tmp_path, "H&E")
     app.session_state["workspace_section_H&E"] = "Setup"
     settings.save_user_settings(

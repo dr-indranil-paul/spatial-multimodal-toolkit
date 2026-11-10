@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
+from spatial_omics_toolkit.application.config import load_site_config
 
 
 @lru_cache(maxsize=1)
@@ -14,7 +15,7 @@ def ensure_arial() -> str:
     try:
         return str(font_manager.findfont(family, fallback_to_default=False))
     except ValueError:
-        software_root = Path(os.environ.get("PAULI_FAST_SOFTWARES", "/home/groups/EmiliLab/pauli/00_environments"))
+        software_root = Path(os.environ.get("PAULI_FAST_SOFTWARES", str(load_site_config().software_root)))
         font_dir = software_root / "share" / "fonts" / "arial"
         if font_dir.is_dir():
             for font in sorted(font_dir.iterdir()):

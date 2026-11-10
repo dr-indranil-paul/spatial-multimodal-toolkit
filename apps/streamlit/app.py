@@ -15,11 +15,11 @@ import streamlit as st
 
 from spatial_omics_toolkit.application.contracts import ParameterField, PreflightResult, RunRequest, WorkflowDescriptor
 from spatial_omics_toolkit.application.examples import ExampleSpec
+from spatial_omics_toolkit.application.config import default_output_root, describe_workspace_roots, first_workspace_root, workspace_roots
 from spatial_omics_toolkit.application.intake import (
-    ALLOWED_ROOT,
     PROJECT_SAMPLE_COLUMNS,
-    lexical_path_is_under,
-    path_is_under,
+    lexical_path_is_under_workspace,
+    path_is_under_workspace,
     read_project_samples,
 )
 from spatial_omics_toolkit.application.service import prepare_request, submit_request
@@ -122,7 +122,7 @@ def _optional_acquisition_fingerprint(project_root: Path) -> str:
     """Bind UI review to optional project files without making them prerequisites."""
     fingerprints: dict[str, str] = {}
     try:
-        if not project_root.is_dir() or not path_is_under(project_root, Path(ALLOWED_ROOT)):
+        if not project_root.is_dir() or not path_is_under_workspace(project_root):
             return ""
         for name in ("acquisition_metadata.csv", "acquisition_relationships.csv"):
             path = project_root / name
@@ -143,12 +143,12 @@ def _optional_acquisition_fingerprint(project_root: Path) -> str:
 
 def open_server_path_picker(kind: str, target_key: str, initial_path: str) -> None:
     """Open the picker without changing its destination until the user chooses."""
-    allowed_root = _normalized_path(Path(ALLOWED_ROOT))
+    default_root = _normalized_path(first_workspace_root())
     current = _normalized_path(Path(initial_path))
     if kind in {"file", "czi", "native"} and current.is_file():
         current = current.parent
-    if not current.is_dir() or not lexical_path_is_under(current, allowed_root) or not path_is_under(current, allowed_root):
-        current = allowed_root
+    if not current.is_dir() or not lexical_path_is_under_workspace(current) or not path_is_under_workspace(current):
+        current = default_root
     st.session_state["_server_picker_kind"] = kind
     st.session_state["_server_picker_target"] = target_key
     st.session_state[f"_server_picker_directory_{target_key}"] = str(current)
@@ -165,13 +165,13 @@ def _close_server_path_picker() -> None:
 @st.dialog("Choose a folder or file", on_dismiss=_close_server_path_picker)
 def server_path_picker_dialog() -> None:
     """Browse server paths under the institute workspace without uploading data."""
-    allowed_root = _normalized_path(Path(ALLOWED_ROOT))
+    default_root = _normalized_path(first_workspace_root())
     kind = str(st.session_state.get("_server_picker_kind", "directory"))
     target_key = str(st.session_state.get("_server_picker_target", ""))
     browse_key = f"_server_picker_directory_{target_key}"
-    current = _normalized_path(Path(str(st.session_state.get(browse_key, allowed_root))))
-    if not current.is_dir() or not lexical_path_is_under(current, allowed_root) or not path_is_under(current, allowed_root):
-        current = allowed_root
+    current = _normalized_path(Path(str(st.session_state.get(browse_key, default_root))))
+    if not current.is_dir() or not lexical_path_is_under_workspace(current) or not path_is_under_workspace(current):
+        current = default_root
         st.session_state[browse_key] = str(current)
     path_key = f"_server_picker_path_{target_key}"
     pending_key = f"_server_picker_pending_{target_key}"
@@ -207,8 +207,8 @@ def server_path_picker_dialog() -> None:
     typed_path = _normalized_path(Path(path_text))
     if st.button("Open entered path", key=f"_server_picker_go_{target_key}"):
         valid_suffix = ".csv" if kind == "file" else ".czi"
-        if not lexical_path_is_under(typed_path, allowed_root) or not path_is_under(typed_path, allowed_root):
-            st.error("Choose a path under the institute workspace; links must also resolve inside it.")
+        if not lexical_path_is_under_workspace(typed_path) or not path_is_under_workspace(typed_path):
+            st.error(f"Choose a path inside an approved workspace root ({describe_workspace_roots()}); links must also resolve inside it.")
         elif kind in {"file", "czi", "native"} and typed_path.is_file() and (kind == "native" or typed_path.suffix.lower() == valid_suffix):
             st.session_state[target_key] = str(typed_path)
             st.session_state[pending_key] = str(typed_path)
@@ -221,7 +221,7 @@ def server_path_picker_dialog() -> None:
         else:
             expected = "a native file" if kind == "native" else "a .czi file" if kind == "czi" else "a .csv file" if kind == "file" else "a directory"
             st.error(f"Enter an existing directory or {expected}.")
-    if current != allowed_root and st.button("Parent folder", key=f"_server_picker_parent_{target_key}"):
+    if current not in {_normalized_path(root) for root in workspace_roots()} and st.button("Parent folder", key=f"_server_picker_parent_{target_key}"):
         parent = str(current.parent)
         st.session_state[browse_key] = parent
         st.session_state[navigation_key] = parent
@@ -230,7 +230,7 @@ def server_path_picker_dialog() -> None:
     with st.container(height=320, border=True):
         directories = [
             path for path in child_directories(str(current))
-            if (show_hidden or not Path(path).name.startswith(".")) and path_is_under(Path(path), allowed_root)
+            if (show_hidden or not Path(path).name.startswith(".")) and path_is_under_workspace(Path(path))
         ]
         if not directories:
             st.caption("No subfolders here.")
@@ -249,7 +249,7 @@ def server_path_picker_dialog() -> None:
             files = sorted(
                 path for path in current.iterdir()
                 if path.is_file() and (kind == "native" or path.suffix.lower() == suffix)
-                and lexical_path_is_under(path, allowed_root) and path_is_under(path, allowed_root)
+                and lexical_path_is_under_workspace(path) and path_is_under_workspace(path)
             )
             for file_path in files:
                 if st.button(
@@ -379,7 +379,7 @@ def read_tma_core_map(path_text: str) -> tuple[list[dict[str, str]], str, list[s
     path = _normalized_path(Path(path_text))
     if not path_text.strip():
         return [], "", []
-    if not lexical_path_is_under(path, _normalized_path(Path(ALLOWED_ROOT))):
+    if not lexical_path_is_under_workspace(path):
         return [], "", ["Choose a core-map CSV within the project workspace."]
     try:
         if path.stat().st_size > 1024 * 1024:
@@ -750,8 +750,8 @@ def _initialize_state() -> None:
     ):
         st.session_state.pop(legacy_key, None)
     defaults = {
-        "project_root_path": "/home/groups/EmiliLab/pauli/",
-        "output_root": "/home/groups/EmiliLab/pauli/02_projects_current/02_spatial_toolkit/runs",
+        "project_root_path": str(first_workspace_root()) + "/",
+        "output_root": str(default_output_root()),
         "annotation_csv": "",
         "active_run_dirs": {},
         "selected_run_dirs": {},
@@ -834,6 +834,9 @@ def _render_project() -> None:
             if st.button("Browse project folder…", key="browse_project_root", use_container_width=True):
                 open_server_path_picker("directory", "project_root_path", str(st.session_state["project_root_path"]))
             root = Path(root_text).expanduser()
+            root_approved = root.is_dir() and path_is_under_workspace(root)
+            if root_text.strip() and not root_approved:
+                st.error(f"Choose an existing folder inside an approved workspace root. {describe_workspace_roots()}.")
             current_metadata = str(st.session_state.get("annotation_csv", ""))
             default_path = root / "project_samples.csv"
             old_default = str(Path(st.session_state.get("_annotation_default_root", root_text)) / "project_samples.csv")
@@ -880,7 +883,7 @@ def _render_project() -> None:
         with st.container(border=True, key="project_step_inspector"):
             st.markdown('<div class="wb-pane-header"><p class="wb-pane-title">Sample sheet review & study status</p></div>', unsafe_allow_html=True)
             annotation = Path(str(st.session_state.get("annotation_csv", ""))).expanduser()
-            root_ok = root.is_dir()
+            root_ok = root_approved
             out_ok = bool(str(st.session_state.get("output_root", "")).strip())
             st.markdown(
                 f'<div class="wb-readiness-strip">'
@@ -904,7 +907,7 @@ def _render_project() -> None:
 
     from spatial_omics_toolkit.application.ui.acquisition import render_acquisition_information
 
-    render_acquisition_information(root, Path(ALLOWED_ROOT), open_server_path_picker, str(st.session_state.get("annotation_csv", "")))
+    render_acquisition_information(root, open_server_path_picker, str(st.session_state.get("annotation_csv", "")))
 
 
 def _modality_run_request(
@@ -1984,7 +1987,8 @@ def main() -> None:
                     on_click=lambda target=destination: st.session_state.__setitem__("spatial_page", target),
                 )
             if not read_only:
-                root_ready = Path(str(st.session_state.get("project_root_path", ""))).expanduser().is_dir()
+                project_path = Path(str(st.session_state.get("project_root_path", ""))).expanduser()
+                root_ready = project_path.is_dir() and path_is_under_workspace(project_path)
                 csv_ready = Path(str(st.session_state.get("annotation_csv", ""))).expanduser().is_file()
                 st.markdown(
                     '<div class="sidebar-study-card">'

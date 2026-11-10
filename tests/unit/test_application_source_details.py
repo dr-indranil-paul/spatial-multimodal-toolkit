@@ -19,7 +19,7 @@ from spatial_omics_toolkit.application.worker import _render_pdf_previews
 def test_saved_source_render_merges_workflow_receipts_and_event_versions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage_id: str,
 ) -> None:
-    monkeypatch.setattr(results, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "native_source_metadata.json").write_text(json.dumps({
@@ -55,7 +55,7 @@ def test_saved_source_render_merges_workflow_receipts_and_event_versions(
 def test_receipt_source_versions_collects_only_workflow_script_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(results, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     flim_dir = tmp_path / "flim"
     flim_dir.mkdir()
     flim_hashes = {
@@ -101,7 +101,7 @@ def test_receipt_source_versions_collects_only_workflow_script_hashes(
 def test_receipt_source_versions_rejects_invalid_or_mismatched_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_text: str, metadata: dict[str, str],
 ) -> None:
-    monkeypatch.setattr(results, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "adapter_receipt.json").write_text(receipt_text, encoding="utf-8")
@@ -112,7 +112,7 @@ def test_receipt_source_versions_rejects_invalid_or_mismatched_receipt(
 def test_receipt_source_versions_rejects_receipt_symlink_outside_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(results, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     outside = tmp_path / "outside.json"

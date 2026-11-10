@@ -9,7 +9,8 @@ from typing import Any, Literal
 
 import streamlit as st
 
-from spatial_omics_toolkit.application.intake import ALLOWED_ROOT, path_is_under, sha256_file
+from spatial_omics_toolkit.application.config import containing_workspace_root
+from spatial_omics_toolkit.application.intake import path_is_under, path_is_under_workspace, sha256_file
 from spatial_omics_toolkit.application.scheduler import read_run_status
 from spatial_omics_toolkit.application.service import submit_review_decision
 from spatial_omics_toolkit.application.workflows.registry import list_workflows
@@ -38,7 +39,7 @@ def _receipt_source_versions(run_dir: Path, metadata: dict[str, Any]) -> dict[st
         return {}
     try:
         resolved_run_dir = run_dir.resolve(strict=True)
-        if not resolved_run_dir.is_dir() or not path_is_under(resolved_run_dir, ALLOWED_ROOT.resolve()):
+        if not resolved_run_dir.is_dir() or not path_is_under_workspace(resolved_run_dir):
             return {}
         receipt_name, hash_field, scripts = schema
         receipt_path = (resolved_run_dir / receipt_name).resolve(strict=True)
@@ -96,7 +97,7 @@ def _read_events(run_dir: Path) -> list[dict[str, Any]]:
 def _safe_run_dir(run_dir: Path) -> bool:
     try:
         resolved = run_dir.resolve(strict=True)
-        return resolved.is_dir() and path_is_under(resolved, ALLOWED_ROOT.resolve())
+        return resolved.is_dir() and path_is_under_workspace(resolved)
     except (OSError, RuntimeError):
         return False
 
@@ -110,7 +111,7 @@ def _bundle_metadata(
         output_resolved = output_root.resolve(strict=True)
     except (OSError, RuntimeError):
         return None
-    if not resolved.is_dir() or not path_is_under(resolved, output_resolved) or not path_is_under(resolved, ALLOWED_ROOT.resolve()):
+    if not resolved.is_dir() or not path_is_under(resolved, output_resolved) or not path_is_under_workspace(resolved):
         return None
     metadata = _read_json(resolved / "run.json")
     workflow_id = metadata.get("workflow_id")
@@ -446,7 +447,7 @@ def show_artifact(artifact_text: str, run_dir: Path, status: str | None = None, 
     except (OSError, RuntimeError) as exc:
         st.info(f"This artifact is unavailable: {exc}")
         return
-    if not path_is_under(resolved, ALLOWED_ROOT.resolve()):
+    if not path_is_under_workspace(resolved):
         st.caption("File contents are not opened because this path resolves outside the approved workspace.")
         return
     if size <= _DOWNLOAD_LIMIT:
@@ -650,7 +651,12 @@ def _render_results(run_dir: Path) -> None:
             show_artifact(str(selected["path"]), run_dir, selected["status"], key_prefix=f"results_{run_dir.resolve()}")
             from spatial_omics_toolkit.application.ui.plotting import render_plot_controls
 
-            render_plot_controls(selected["path"], run_dir, ALLOWED_ROOT)
+            try:
+                plot_root = containing_workspace_root(selected["path"])
+            except ValueError:
+                plot_root = None
+            if plot_root is not None:
+                render_plot_controls(selected["path"], run_dir, plot_root)
 
             def source_matches(record: dict[str, Any]) -> bool:
                 source_text = str(record["metadata"].get("source_pdf", ""))

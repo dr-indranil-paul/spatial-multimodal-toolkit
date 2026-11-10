@@ -23,6 +23,7 @@ from spatial_omics_toolkit.application.acquisition import (
     write_acquisition_metadata,
     write_acquisition_relationships,
 )
+from spatial_omics_toolkit.application.config import containing_workspace_root
 from spatial_omics_toolkit.application.intake import lexical_path_is_under, path_is_under
 
 
@@ -232,18 +233,20 @@ def _editor(
 
 
 def render_acquisition_information(
-    project_root: Path, workspace_root: Path, picker: Callable[[str, str, str], None],
-    annotation_csv: str,
+    project_root: Path, picker: Callable[[str, str, str], None], annotation_csv: str,
 ) -> None:
     st.divider()
     st.header("Acquisition information")
     st.write("Optional, project-level records describe acquisitions and their evidence. The existing project_samples.csv remains the authority for specimen and biological-unit identity. These records do not prevent independent modality QC.")
-    if (not project_root.is_dir() or not lexical_path_is_under(project_root, workspace_root)
-            or not path_is_under(project_root, workspace_root)):
-        st.info("Choose an existing project folder inside the approved workspace to review acquisition information.")
+    try:
+        workspace = containing_workspace_root(project_root)
+    except ValueError:
+        st.info("Choose an existing project folder inside an approved workspace root to review acquisition information.")
+        return
+    if not project_root.is_dir():
+        st.info("Choose an existing project folder inside an approved workspace root to review acquisition information.")
         return
     root = project_root.resolve()
-    workspace = workspace_root.resolve()
     scope = hashlib.sha256(str(root).encode()).hexdigest()[:16]
     annotation = Path(annotation_csv).expanduser() if annotation_csv.strip() else None
     try:

@@ -13,10 +13,10 @@ from typing import cast
 from spatial_omics_toolkit.application.contracts import (
     RunRequest, StageEvent, StageStatus, WorkflowDescriptor, WorkflowEmitter, WorkflowResult,
 )
+from spatial_omics_toolkit.application.config import load_site_config
 from spatial_omics_toolkit.application.runs import append_event, atomic_json, update_status
 from spatial_omics_toolkit.application.settings import validate_frozen_config_files
 
-_LAUNCHER = "/home/groups/EmiliLab/pauli/00_environments/bin/spatial-python"
 _STAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _TERMINAL = {"FAILED", "BLOCKED", "QC_PENDING"}
 _STATUSES = {"SUCCEEDED", "WARNING", "REUSED", "SKIPPED", *_TERMINAL}
@@ -75,7 +75,7 @@ def generate_pipeline(descriptor: WorkflowDescriptor, request_path: Path, receip
         else:
             lines.append("    val trigger")
         lines.extend(["    output:", f"    path '{name}.json'", "    script:", '    """'])
-        command = (f"{_LAUNCHER} -m spatial_omics_toolkit.application.nextflow stage "
+        command = (f"{load_site_config().python} -m spatial_omics_toolkit.application.nextflow stage "
                    f"--request-b64 {_encoded(request_path)} --receipts-b64 {_encoded(receipt_dir)} "
                    f"--stage {stage_id} --output {name}.json")
         for index, dependency in enumerate(stage.depends_on):
