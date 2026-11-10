@@ -38,7 +38,7 @@ Each lab keeps its own clone, environment, and data. The GitHub repository is th
 - Delete the branch after its pull request is merged.
 - A branch created before the portability changes are merged must run `git merge main` after that pull request lands, so it picks up the site-configuration and environment changes.
 - Before starting new work, update your local `main` with `git switch main && git pull`.
-- The repository owner may enable branch protection on `main` (require a pull request, review, and passing tests). This is a recommended GitHub setting; check the repository settings to see whether it is enabled.
+- Branch protection on `main` and code-owner review depend on the owner's GitHub plan and settings. See [CONTRIBUTING.md](../CONTRIBUTING.md#repository-rules-owner).
 
 ## 4. Build your environment
 

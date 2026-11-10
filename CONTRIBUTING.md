@@ -15,7 +15,17 @@ Setup for a new workspace is in [docs/COLLABORATOR_SETUP.md](docs/COLLABORATOR_S
 
 - Delete the branch after its pull request is merged.
 - A branch created before the portability changes are merged must run `git merge main` after that pull request lands.
-- Recommended GitHub setting for the owner: branch protection on `main` requiring a pull request, review, and passing tests. Confirm it is enabled in the repository settings; this document does not assume it is.
+- The owner must confirm the rules in [Repository rules](#repository-rules-owner) below. Nothing enforces them until the owner enables them.
+
+## Repository rules (owner)
+
+These rules depend on the GitHub plan and settings of the repository owner. They are not on by default.
+
+- **Plan.** Branch protection and required reviews on a private repository need GitHub Pro, Team or Enterprise. Check Settings → Billing and plans. On a free plan, use the fallback: everyone agrees in writing not to push to `main`, and the owner merges every pull request.
+- **Branch protection on `main`.** Settings → Branches → Add rule. Require a pull request with at least one approval, require the test check to pass, block force-pushes and deletions, and dismiss stale approvals.
+- **Code owners.** `.github/CODEOWNERS` has no effect until the same rule ticks "Require review from Code Owners".
+- **Delete head branches automatically.** Settings → General → Pull Requests.
+- **Forking.** Outside collaborators can fork a private repository only if Settings → General → Forking allows it. If it is disabled, invite them as collaborators instead.
 
 ## Adding a workflow adapter
 

@@ -1,4 +1,4 @@
-# Every change needs a review from the repository owner.
+# Takes effect only when branch protection on main ticks "Require review from Code Owners". See CONTRIBUTING.md.
 *                                                          @dr-indranil-paul
 
 # Site configuration, vendored scripts and environment pins affect every lab.
