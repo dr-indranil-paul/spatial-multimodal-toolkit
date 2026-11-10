@@ -28,6 +28,16 @@ These rules depend on the GitHub plan and settings of the repository owner. They
 - **Delete head branches automatically.** Settings → General → Pull Requests.
 - **Forking.** Outside collaborators can fork a private repository only if Settings → General → Forking allows it. If it is disabled, invite them as collaborators instead.
 
+## Agreed rule on the free plan
+
+The repository is on a free GitHub plan, so GitHub cannot enforce these rules. They are a team agreement:
+
+- Nobody pushes to `main`. Every change arrives as a pull request from a topic branch.
+- The owner reads each pull request and merges it. Contributors don't merge their own work.
+- CI (`unit` in `tests`) runs on every pull request. A failing run is not merged.
+- Optional local guard: run `git config core.hooksPath .githooks` once in your clone. The `pre-push` hook refuses direct pushes to `main`. It is advisory only; `git push --no-verify` bypasses it, and GitHub does not check it.
+- Making the repository public is not a way out of this rule. It would expose the vendored clinical-analysis code and lab paths, and the data-rights approvals for those files are not yet resolved.
+
 ## Adding a workflow adapter
 
 Adapters live in `src/spatial_omics_toolkit/application/workflows/`. Each module implements:

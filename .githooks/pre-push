@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Advisory guard for clones that opt in:
+#   git config core.hooksPath .githooks
+# This is not enforcement. Anyone can skip it with `git push --no-verify`,
+# and it does not run on the GitHub side. The team rule is in CONTRIBUTING.md.
+set -euo pipefail
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_ref" == "refs/heads/main" ]]; then
+    echo "Refusing to push directly to main. Push a topic branch and open a pull request." >&2
+    echo "See CONTRIBUTING.md (Branches and pull requests)." >&2
+    exit 1
+  fi
+done
+exit 0
