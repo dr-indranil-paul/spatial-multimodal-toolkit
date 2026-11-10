@@ -14,7 +14,7 @@ Setup for a new workspace is in [docs/COLLABORATOR_SETUP.md](docs/COLLABORATOR_S
   ```
 
 - Delete the branch after its pull request is merged.
-- A branch created before the portability changes are merged must run `git merge main` after that pull request lands.
+- A branch created before the portability changes are merged must run `git fetch origin && git merge origin/main` after that pull request lands.
 - The owner must confirm the rules in [Repository rules](#repository-rules-owner) below. Nothing enforces them until the owner enables them.
 
 ## Repository rules (owner)
@@ -22,7 +22,8 @@ Setup for a new workspace is in [docs/COLLABORATOR_SETUP.md](docs/COLLABORATOR_S
 These rules depend on the GitHub plan and settings of the repository owner. They are not on by default.
 
 - **Plan.** Branch protection and required reviews on a private repository need GitHub Pro, Team or Enterprise. Check Settings → Billing and plans. On a free plan, use the fallback: everyone agrees in writing not to push to `main`, and the owner merges every pull request.
-- **Branch protection on `main`.** Settings → Branches → Add rule. Require a pull request with at least one approval, require the test check to pass, block force-pushes and deletions, and dismiss stale approvals.
+- **Branch protection on `main`.** Settings → Branches → Add rule. Require a pull request with at least one approval, require the check `unit` (the job `unit` in the workflow `tests`) to pass, block force-pushes and deletions, and dismiss stale approvals. Select `unit` after the workflow has run once; the check does not appear in the list before that.
+- **Self-approval.** GitHub does not count an author's own approval. If the owner is the only reviewer and opens a PR, either allow admins to merge (leave "Do not allow bypassing the above settings" unticked) or add a second reviewer. Otherwise the PR cannot merge.
 - **Code owners.** `.github/CODEOWNERS` has no effect until the same rule ticks "Require review from Code Owners".
 - **Delete head branches automatically.** Settings → General → Pull Requests.
 - **Forking.** Outside collaborators can fork a private repository only if Settings → General → Forking allows it. If it is disabled, invite them as collaborators instead.

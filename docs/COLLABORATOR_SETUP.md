@@ -36,7 +36,7 @@ Each lab keeps its own clone, environment, and data. The GitHub repository is th
 
 - Open a pull request from `<name>-<topic>` into `main` on GitHub.
 - Delete the branch after its pull request is merged.
-- A branch created before the portability changes are merged must run `git merge main` after that pull request lands, so it picks up the site-configuration and environment changes.
+- A branch created before the portability changes are merged must run `git fetch origin && git merge origin/main` after that pull request lands, so it picks up the site-configuration and environment changes.
 - Before starting new work, update your local `main` with `git switch main && git pull`.
 - Branch protection on `main` and code-owner review depend on the owner's GitHub plan and settings. See [CONTRIBUTING.md](../CONTRIBUTING.md#repository-rules-owner).
 
