@@ -20,6 +20,22 @@ One application exposes the full workspace by default, including on Streamlit Co
 
 Interface availability is distinct from execution capability. The app reports when `sbatch` is absent, but scheduler availability and authorization are ultimately checked on submission; failures are surfaced, not replaced with local execution. Submission requires an authorized SLURM backend and server-accessible approved paths. HPC filesystem paths do not become available to Community Cloud merely by deploying the interface; Cloud resource and storage limits also apply.
 
+## Site configuration
+
+[`application/config.py`](src/spatial_omics_toolkit/application/config.py) exposes `SiteConfig` and `load_site_config()`. The function reads the process environment on each call; nothing is captured at import time. Variables:
+
+- `SPATIAL_TOOLKIT_WORKSPACE_ROOTS`: `os.pathsep`-separated approved roots. A path is approved if it resolves under any root. Rejected paths name this variable in the error. Default: the Emili lab workspace.
+- `SPATIAL_TOOLKIT_PYTHON`: interpreter used by job scripts for the worker, controller, and Nextflow. Default: the Emili lab `spatial-python`.
+- `SPATIAL_TOOLKIT_ENV_SCRIPT`: optional shell script sourced at the top of every job script. Empty means source nothing.
+- `SPATIAL_TOOLKIT_EXTRA_PYTHONPATH`: extra `PYTHONPATH` entries for jobs. The toolkit `src` directory is always derived from the installed package location, never hard-coded.
+- `SPATIAL_TOOLKIT_SLURM_ACCOUNT` and `SPATIAL_TOOLKIT_SLURM_PARTITION`: when set, `sbatch` receives `--account=` and `--partition=`; when unset, no flag is added.
+- `SPATIAL_TOOLKIT_EXAMPLES`, `SPATIAL_TOOLKIT_FLIM_SOURCE_DIR`, `SPATIAL_TOOLKIT_HS_SOURCE_DIR`: examples root and analysis-script directories.
+
+Job scripts are built from `SiteConfig`: the env script is sourced at the top, `PYTHONPATH` is composed from the extra entries plus the `src` directory of the installed package, and `sbatch` receives the optional account and partition flags. Submission paths and output roots are checked against the approved roots before any job is created.
+
+The FLIM and HS analysis scripts are vendored in `src/spatial_omics_toolkit/external_scripts/`, which is the default for the two `*_SOURCE_DIR` variables. Setting a variable overrides the vendored copy; there is no silent fallback to another location. The vendored copies are not a substitute for their upstream sources; their origin and revision are recorded with the scripts.
+
+
 ## Main components
 
 - [`src/spatial_omics_toolkit/application/ui/presentation.py`](src/spatial_omics_toolkit/application/ui/presentation.py) owns the Slate & Indigo workbench visual system, dark-slate sidebar navigation styling, bold blue horizontal section-tab labels, white text on active primary buttons, compact modality summary banner, and workflow-stage presentation.
