@@ -13,6 +13,8 @@ from spatial_omics_toolkit.application.runs import (
     update_status,
     update_status_if,
 )
+from spatial_omics_toolkit.application import service
+from spatial_omics_toolkit.application.worker import _validate_acquisition_snapshots, run_worker
 
 
 def _request(tmp_path: Path) -> RunRequest:
@@ -84,6 +86,183 @@ def test_run_bundle_rejects_changed_project_samples(tmp_path: Path) -> None:
         )
 
     assert not request.run_dir.exists()
+
+
+def test_acquisition_snapshots_preserve_exact_bytes_and_worker_checks_them(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    sources = {
+        "acquisition_metadata.csv": b"acquisition_id,field\r\na,scale\r\n",
+        "acquisition_relationships.csv": b"acquisition_id,relationship\r\na,candidate\r\n",
+    }
+    hashes = {}
+    for name, content in sources.items():
+        (request.project_root / name).write_bytes(content)
+        hashes[name] = hashlib.sha256(content).hexdigest()
+    metadata = create_run_bundle(request, {}, {"_acquisition_csv_sha256": hashes})
+    for name, content in sources.items():
+        snapshot = request.run_dir / "inputs" / name
+        assert snapshot.read_bytes() == content
+        assert metadata["project"]["acquisition_snapshots"][name]["sha256"] == hashes[name]
+        (request.project_root / name).write_bytes(b"changed source")
+    _validate_acquisition_snapshots(request.run_dir, metadata["project"])
+    (request.run_dir / "inputs" / "acquisition_metadata.csv").chmod(0o600)
+    (request.run_dir / "inputs" / "acquisition_metadata.csv").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="snapshot changed"):
+        _validate_acquisition_snapshots(request.run_dir, metadata["project"])
+    assert run_worker(request.run_dir) == 1
+    status = json.loads((request.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["status"] == "FAILED"
+    assert "snapshot changed" in status["message"]
+
+
+def test_acquisition_changed_after_preflight_rejects_bundle(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    source = request.project_root / "acquisition_metadata.csv"
+    source.write_bytes(b"reviewed")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    source.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="changed after final preflight"):
+        create_run_bundle(request, {}, {"_acquisition_csv_sha256": {source.name: digest}})
+    assert not request.run_dir.exists()
+
+
+def test_preflight_absent_declarations_are_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    assert service._review_acquisition_declarations(request.project_root) == ({}, [])
+
+
+def test_preflight_reviews_and_excludes_invalid_optional_declarations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    metadata = request.project_root / "acquisition_metadata.csv"
+    metadata.write_text(
+        "acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
+        "a,Visium,visium,specimen-1,pixel_size_x,1,um,user,operator log,true\n",
+        encoding="utf-8",
+    )
+    relationships = request.project_root / "acquisition_relationships.csv"
+    relationships.write_text("wrong,columns\nx,y\n", encoding="utf-8")
+    hashes, warnings = service._review_acquisition_declarations(request.project_root)
+    assert hashes == {metadata.name: hashlib.sha256(metadata.read_bytes()).hexdigest()}
+    assert any(relationships.name in warning and "excluded" in warning for warning in warnings)
+
+
+def test_preflight_excludes_declarations_changed_during_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    metadata = request.project_root / "acquisition_metadata.csv"
+    metadata.write_text(
+        "acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
+        "a,Visium,visium,specimen-1,pixel_size_x,1,um,user,operator log,true\n",
+        encoding="utf-8",
+    )
+    validate = service.validate_acquisition_metadata
+
+    def changed_during_validation(*args: object, **kwargs: object) -> list[str]:
+        metadata.write_bytes(b"after")
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(service, "validate_acquisition_metadata", changed_during_validation)
+    hashes, warnings = service._review_acquisition_declarations(request.project_root, request.annotation_csv)
+    assert hashes == {}
+    assert any("changed" in warning for warning in warnings)
+
+
+def test_preflight_validates_captured_metadata_and_samples_despite_aba(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    metadata = request.project_root / "acquisition_metadata.csv"
+    original = (
+        b"acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
+        b"a,Visium,visium,specimen-2,pixel_size_x,1,um,user,operator log,true\n"
+    )
+    metadata.write_bytes(original)
+    sample_bytes = request.annotation_csv.read_bytes()
+    validate = service.validate_acquisition_metadata
+
+    def swapped_during_validation(*args: object, **kwargs: object) -> list[str]:
+        metadata.write_bytes(original.replace(b"specimen-2", b"specimen-1"))
+        request.annotation_csv.write_bytes(sample_bytes.replace(b"specimen-1", b"specimen-2"))
+        try:
+            return validate(*args, **kwargs)
+        finally:
+            metadata.write_bytes(original)
+            request.annotation_csv.write_bytes(sample_bytes)
+
+    monkeypatch.setattr(service, "validate_acquisition_metadata", swapped_during_validation)
+    hashes, warnings = service._review_acquisition_declarations(
+        request.project_root, request.annotation_csv, annotation_bytes=sample_bytes
+    )
+    assert hashes == {}
+    assert any("Unknown project specimen_id: specimen-2" in warning for warning in warnings)
+
+
+def test_preflight_relationships_use_captured_metadata_despite_aba(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(tmp_path)
+    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    metadata = request.project_root / "acquisition_metadata.csv"
+    original = (
+        b"acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
+        b"a,Visium,visium,specimen-1,pixel_size_x,1,um,user,operator log,true\n"
+    )
+    metadata.write_bytes(original)
+    relationships = request.project_root / "acquisition_relationships.csv"
+    relationships.write_text(
+        "acquisition_id,related_acquisition_id,relationship,evidence,reviewed\n"
+        "a,b,serial,operator,true\n", encoding="utf-8"
+    )
+    validate = service.validate_acquisition_relationships
+
+    def swapped_during_validation(*args: object, **kwargs: object) -> list[str]:
+        metadata.write_bytes(original + original.splitlines(keepends=True)[1].replace(b"a,Visium", b"b,Visium"))
+        try:
+            return validate(*args, **kwargs)
+        finally:
+            metadata.write_bytes(original)
+
+    monkeypatch.setattr(service, "validate_acquisition_relationships", swapped_during_validation)
+    hashes, warnings = service._review_acquisition_declarations(request.project_root, request.annotation_csv)
+    assert hashes == {metadata.name: hashlib.sha256(original).hexdigest()}
+    assert any("unknown acquisition ID" in warning for warning in warnings)
+
+
+def test_worker_rejects_inputs_directory_symlink_outside_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _request(tmp_path)
+    source = request.project_root / "acquisition_metadata.csv"
+    source.write_bytes(b"declaration")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    metadata = create_run_bundle(request, {}, {"_acquisition_csv_sha256": {source.name: digest}})
+    inputs = request.run_dir / "inputs"
+    outside = tmp_path / "external-inputs"
+    inputs.rename(outside)
+    inputs.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="inputs resolve outside"):
+        _validate_acquisition_snapshots(request.run_dir, metadata["project"])
+    assert run_worker(request.run_dir) == 1
+    status = json.loads((request.run_dir / "status.json").read_text(encoding="utf-8"))
+    assert "inputs resolve outside" in status["message"]
+
+
+def test_acquisition_snapshot_rejects_outside_symlink(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    outside = tmp_path / "outside.csv"
+    outside.write_bytes(b"outside")
+    source = request.project_root / "acquisition_metadata.csv"
+    source.symlink_to(outside)
+    digest = hashlib.sha256(outside.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="outside the project root"):
+        create_run_bundle(request, {}, {"_acquisition_csv_sha256": {source.name: digest}})
+    assert not request.run_dir.exists()
+
+
+def test_missing_optional_acquisition_snapshots_are_compatible(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    metadata = create_run_bundle(request, {}, {})
+    assert metadata["project"]["acquisition_snapshots"] == {}
+    _validate_acquisition_snapshots(request.run_dir, metadata["project"])
+    _validate_acquisition_snapshots(request.run_dir, {})
+
 def test_slurm_reconciliation_preserves_terminal_worker_status(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()

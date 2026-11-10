@@ -19,6 +19,7 @@ from spatial_omics_toolkit.application.intake import (
     ALLOWED_ROOT,
     PROJECT_SAMPLE_COLUMNS,
     lexical_path_is_under,
+    path_is_under,
     read_project_samples,
 )
 from spatial_omics_toolkit.application.service import prepare_request, submit_request
@@ -117,13 +118,36 @@ def _normalized_path(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path.expanduser())))
 
 
+def _optional_acquisition_fingerprint(project_root: Path) -> str:
+    """Bind UI review to optional project files without making them prerequisites."""
+    fingerprints: dict[str, str] = {}
+    try:
+        if not project_root.is_dir() or not path_is_under(project_root, Path(ALLOWED_ROOT)):
+            return ""
+        for name in ("acquisition_metadata.csv", "acquisition_relationships.csv"):
+            path = project_root / name
+            if path.is_symlink():
+                fingerprints[name] = "unsafe-link"
+            elif path.is_file():
+                stat = path.stat()
+                if stat.st_size > 5 * 1024 * 1024:
+                    fingerprints[name] = f"oversize:{stat.st_size}:{stat.st_mtime_ns}"
+                else:
+                    fingerprints[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+            elif path.exists():
+                fingerprints[name] = "not-file"
+    except (OSError, RuntimeError):
+        return "unreadable"
+    return json.dumps(fingerprints, sort_keys=True)
+
+
 def open_server_path_picker(kind: str, target_key: str, initial_path: str) -> None:
     """Open the picker without changing its destination until the user chooses."""
     allowed_root = _normalized_path(Path(ALLOWED_ROOT))
     current = _normalized_path(Path(initial_path))
-    if kind in {"file", "czi"} and current.is_file():
+    if kind in {"file", "czi", "native"} and current.is_file():
         current = current.parent
-    if not current.is_dir() or not lexical_path_is_under(current, allowed_root):
+    if not current.is_dir() or not lexical_path_is_under(current, allowed_root) or not path_is_under(current, allowed_root):
         current = allowed_root
     st.session_state["_server_picker_kind"] = kind
     st.session_state["_server_picker_target"] = target_key
@@ -146,7 +170,7 @@ def server_path_picker_dialog() -> None:
     target_key = str(st.session_state.get("_server_picker_target", ""))
     browse_key = f"_server_picker_directory_{target_key}"
     current = _normalized_path(Path(str(st.session_state.get(browse_key, allowed_root))))
-    if not current.is_dir() or not lexical_path_is_under(current, allowed_root):
+    if not current.is_dir() or not lexical_path_is_under(current, allowed_root) or not path_is_under(current, allowed_root):
         current = allowed_root
         st.session_state[browse_key] = str(current)
     path_key = f"_server_picker_path_{target_key}"
@@ -160,6 +184,8 @@ def server_path_picker_dialog() -> None:
         st.info("Choose your completed sample-sheet CSV. It needs biological_unit_id, specimen_id, condition, and tissue_source columns, with one row per physical specimen or section. TMA group_key values belong in the separate core map, not this sample sheet.")
     elif target_key.startswith("tma_core_map_path_"):
         st.info("Choose a reviewed core map linking the app's acquisition group_key to specimen_id in your sample sheet. Obtain the exact group keys by running Check inputs first. Optional slide_id, core_id, and section_id columns describe the TMA layout; they do not define independent biological replicates.")
+    elif kind == "native":
+        st.info("Choose a native acquisition file within the approved workspace. Only supported header metadata is inspected; the source is not changed.")
     elif kind == "czi":
         st.info("Choose one native .czi source image. Its metadata records channel information and physical scale; sources remain read-only.")
     elif target_key.startswith("modality_folder_"):
@@ -181,9 +207,9 @@ def server_path_picker_dialog() -> None:
     typed_path = _normalized_path(Path(path_text))
     if st.button("Open entered path", key=f"_server_picker_go_{target_key}"):
         valid_suffix = ".csv" if kind == "file" else ".czi"
-        if not lexical_path_is_under(typed_path, allowed_root):
-            st.error("Choose a path under the institute workspace.")
-        elif kind in {"file", "czi"} and typed_path.is_file() and typed_path.suffix.lower() == valid_suffix:
+        if not lexical_path_is_under(typed_path, allowed_root) or not path_is_under(typed_path, allowed_root):
+            st.error("Choose a path under the institute workspace; links must also resolve inside it.")
+        elif kind in {"file", "czi", "native"} and typed_path.is_file() and (kind == "native" or typed_path.suffix.lower() == valid_suffix):
             st.session_state[target_key] = str(typed_path)
             st.session_state[pending_key] = str(typed_path)
             st.session_state["_server_picker_open"] = False
@@ -193,7 +219,7 @@ def server_path_picker_dialog() -> None:
             st.session_state[navigation_key] = str(typed_path)
             st.rerun()
         else:
-            expected = "a .czi file" if kind == "czi" else "a .csv file" if kind == "file" else "a directory"
+            expected = "a native file" if kind == "native" else "a .czi file" if kind == "czi" else "a .csv file" if kind == "file" else "a directory"
             st.error(f"Enter an existing directory or {expected}.")
     if current != allowed_root and st.button("Parent folder", key=f"_server_picker_parent_{target_key}"):
         parent = str(current.parent)
@@ -204,7 +230,7 @@ def server_path_picker_dialog() -> None:
     with st.container(height=320, border=True):
         directories = [
             path for path in child_directories(str(current))
-            if show_hidden or not Path(path).name.startswith(".")
+            if (show_hidden or not Path(path).name.startswith(".")) and path_is_under(Path(path), allowed_root)
         ]
         if not directories:
             st.caption("No subfolders here.")
@@ -218,11 +244,12 @@ def server_path_picker_dialog() -> None:
                 st.session_state[browse_key] = str(directory)
                 st.session_state[navigation_key] = str(directory)
                 st.rerun()
-        if kind in {"file", "czi"}:
+        if kind in {"file", "czi", "native"}:
             suffix = ".czi" if kind == "czi" else ".csv"
             files = sorted(
-                path for path in current.glob(f"*{suffix}")
-                if path.is_file() and lexical_path_is_under(path, allowed_root)
+                path for path in current.iterdir()
+                if path.is_file() and (kind == "native" or path.suffix.lower() == suffix)
+                and lexical_path_is_under(path, allowed_root) and path_is_under(path, allowed_root)
             )
             for file_path in files:
                 if st.button(
@@ -875,6 +902,10 @@ def _render_project() -> None:
             else:
                 st.info("No sample sheet is selected yet. Download the template, add your study's information, and choose the completed CSV. You can still run every included example without doing this.")
 
+    from spatial_omics_toolkit.application.ui.acquisition import render_acquisition_information
+
+    render_acquisition_information(root, Path(ALLOWED_ROOT), open_server_path_picker, str(st.session_state.get("annotation_csv", "")))
+
 
 def _modality_run_request(
     descriptor: WorkflowDescriptor, parameters: dict[str, Any], modality: str,
@@ -919,7 +950,8 @@ def _render_mapping(
     tabular_cycif = descriptor.workflow_id == "cycif.tabular_analysis"
     manual = True
     metadata_hash = str(resolved.get("annotation_csv_sha256", "")) if isinstance(resolved, dict) else ""
-    identity_key = confirmation_key(request_data["workflow_id"], request_data["modality_dir"], metadata_hash)
+    acquisition_hash = json.dumps(resolved.get("_acquisition_csv_sha256", {}), sort_keys=True) if isinstance(resolved, dict) else ""
+    identity_key = confirmation_key(request_data["workflow_id"], request_data["modality_dir"], metadata_hash, acquisition_hash)
     parameters = request_data.get("parameters", {})
     tma_map = parameters.get("tma_core_map", {}) if isinstance(parameters, dict) else {}
     if parameters.get("data_layout") == "Tissue microarray (TMA)" and isinstance(groups, list) and groups:
@@ -978,7 +1010,7 @@ def _render_mapping(
     elif tabular_cycif and not manual and bool(resolved.get("has_specimen_id")):
         confirmed = st.checkbox(
             "I confirm the existing specimen_id column is authoritative and matches project metadata.",
-            key=f"cycif_existing_specimen_confirmed_{confirmation_key(request_data['workflow_id'], request_data['annotation_csv'], metadata_hash, *specimen_ids)}",
+            key=f"cycif_existing_specimen_confirmed_{confirmation_key(request_data['workflow_id'], request_data['annotation_csv'], metadata_hash, acquisition_hash, *specimen_ids)}",
         )
         use_specimen_column = confirmed
         if not confirmed:
@@ -1022,13 +1054,13 @@ def _render_mapping(
                     "Project specimen",
                     options,
                     index=selected_index,
-                    key=f"specimen_mapping_{request_data['modality']}_{confirmation_key(request_data['workflow_id'], key, str(tma_map.get('sha256', '')))}",
+                    key=f"specimen_mapping_{request_data['modality']}_{confirmation_key(request_data['workflow_id'], key, str(tma_map.get('sha256', '')), acquisition_hash)}",
                 )
             (core_mapping if tabular_cycif else specimen_mapping)[key] = specimen
         unmapped = [key for key, value in (core_mapping if tabular_cycif else specimen_mapping).items() if value == "UNMAPPED"]
         if unmapped:
             st.warning("Unmapped groups are eligible only for technical QC; specimen-level analysis remains blocked.")
-        parts = [request_data["annotation_csv"], metadata_hash, str(tma_map.get("sha256", "")), *[f"{key}={value}" for key, value in sorted((core_mapping if tabular_cycif else specimen_mapping).items())]]
+        parts = [request_data["annotation_csv"], metadata_hash, acquisition_hash, str(tma_map.get("sha256", "")), *[f"{key}={value}" for key, value in sorted((core_mapping if tabular_cycif else specimen_mapping).items())]]
         confirmed = st.checkbox(
             "I confirm these explicit group-to-specimen mappings, including any QC-only unmapped groups.",
             key=f"specimen_mapping_confirmed_{request_data['modality']}_{confirmation_key(request_data['workflow_id'], *parts)}",
@@ -1087,6 +1119,8 @@ def _reviewed_preflight_changed(
         current_resolved.get("annotation_csv_sha256") != original_resolved.get("annotation_csv_sha256")
     ):
         return "Project sample metadata changed after checks. Run checks again and review the new mapping."
+    if original_resolved.get("_acquisition_csv_sha256", {}) != current_resolved.get("_acquisition_csv_sha256", {}):
+        return "Acquisition information changed after checks. Run checks again and review the mapping."
     original_profile = original_resolved.get("_settings_profile")
     current_profile = current_resolved.get("_settings_profile")
     if isinstance(original_profile, dict) or isinstance(current_profile, dict):
@@ -1751,6 +1785,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
                                 descriptor.workflow_id, modality, str(st.session_state.get("project_root_path", "")),
                                 str(st.session_state.get("annotation_csv", "")), str(st.session_state.get(path_key, "")),
                                 str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(descriptor, parameters),
+                                _optional_acquisition_fingerprint(Path(str(st.session_state.get("project_root_path", ""))).expanduser()),
                             )
                             st.session_state[f"preflight_{modality}"] = (
                                 request.model_dump(mode="json"), result.model_dump(mode="json"), signature,
@@ -1763,6 +1798,7 @@ def _render_modality(modality: str, descriptors: list[WorkflowDescriptor], *, re
                     descriptor.workflow_id, modality, str(st.session_state.get("project_root_path", "")),
                     str(st.session_state.get("annotation_csv", "")), str(st.session_state.get(path_key, "")),
                     str(st.session_state.get(f"modality_output_{modality}", "")), _signature_parameters(descriptor, parameters),
+                    _optional_acquisition_fingerprint(Path(str(st.session_state.get("project_root_path", ""))).expanduser()),
                 )
                 can_submit = False
                 request_data: dict[str, Any] = {}

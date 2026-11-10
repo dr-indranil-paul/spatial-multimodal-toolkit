@@ -143,6 +143,25 @@ def create_run_bundle(request: RunRequest, descriptor: dict[str, Any], resolved_
     samples, blockers = read_project_samples_bytes(annotation_bytes, str(request.annotation_csv))
     if blockers:
         raise ValueError("Cannot submit invalid project_samples.csv: " + "; ".join(blockers))
+    acquisition_hashes = resolved_parameters.get("_acquisition_csv_sha256", {})
+    if not isinstance(acquisition_hashes, dict) or any(
+        name not in {"acquisition_metadata.csv", "acquisition_relationships.csv"}
+        or not isinstance(digest, str)
+        for name, digest in acquisition_hashes.items()
+    ):
+        raise ValueError("Invalid acquisition snapshot metadata; rerun preflight.")
+    acquisition_bytes: dict[str, bytes] = {}
+    for name, expected_digest in acquisition_hashes.items():
+        source = request.project_root / name
+        if not source.resolve().is_relative_to(request.project_root.resolve()):
+            raise ValueError(f"{name} resolves outside the project root.")
+        try:
+            content = source.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"{name} is unavailable after preflight.") from exc
+        if hashlib.sha256(content).hexdigest() != expected_digest:
+            raise ValueError(f"{name} changed after final preflight; rerun preflight before submission.")
+        acquisition_bytes[name] = content
     request.run_dir.mkdir(parents=True, exist_ok=False)
     (request.run_dir / "inputs").mkdir()
     (request.run_dir / "logs").mkdir()
@@ -151,6 +170,16 @@ def create_run_bundle(request: RunRequest, descriptor: dict[str, Any], resolved_
     snapshot_temporary = annotation_snapshot.with_suffix(".csv.tmp")
     snapshot_temporary.write_bytes(annotation_bytes)
     os.replace(snapshot_temporary, annotation_snapshot)
+    acquisition_snapshots: dict[str, dict[str, str]] = {}
+    for name, content in acquisition_bytes.items():
+        snapshot = request.run_dir / "inputs" / name
+        snapshot.write_bytes(content)
+        snapshot.chmod(0o440)
+        acquisition_snapshots[name] = {
+            "source": str((request.project_root / name).absolute()),
+            "snapshot": f"inputs/{name}",
+            "sha256": hashlib.sha256(content).hexdigest(),
+        }
     settings = resolved_parameters.get("_settings_profile")
     if isinstance(settings, dict):
         for key, filename in (("source_toml", "settings_source.toml"), ("effective_toml", "settings_effective.toml")):
@@ -187,6 +216,7 @@ def create_run_bundle(request: RunRequest, descriptor: dict[str, Any], resolved_
         "annotation_csv": str(request.annotation_csv.absolute()),
         "annotation_csv_snapshot": str(annotation_snapshot.resolve()),
         "annotation_csv_sha256": annotation_sha256,
+        "acquisition_snapshots": acquisition_snapshots,
         "inventory_status": "pending_worker_inventory",
     })
     metadata = {
@@ -203,6 +233,7 @@ def create_run_bundle(request: RunRequest, descriptor: dict[str, Any], resolved_
             "annotation_csv_snapshot": str(annotation_snapshot.resolve()),
             "annotation_csv_sha256": annotation_sha256,
             "samples": samples,
+            "acquisition_snapshots": acquisition_snapshots,
         },
         "input": {
             "modality_dir": str(request.modality_dir.absolute()),

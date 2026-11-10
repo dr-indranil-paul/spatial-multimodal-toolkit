@@ -78,6 +78,51 @@ For TMA workflows, the optional core-map CSV links each detected `group_key` to 
 
 An acquisition group left `UNMAPPED` can be used for technical QC only. The app requests confirmation before using mapped groups for analysis.
 
+### Acquisition information and integration
+
+Use **Project → Acquisition information** to document the images and modalities in
+your project. Native metadata is read without loading full-resolution image pixels
+where a supported reader can provide it. Review the reported values and their
+native, user-entered, or unknown provenance; supply missing values only from
+evidence you have reviewed. Disagreeing values need an explicit choice rather than
+an automatic preference. The structured acquisition and relationship CSV files can
+be downloaded, edited, and imported; invalid entries are reported instead of silently
+coerced.
+
+For CZI mosaics, X/Y dimensions come from the full mosaic bounding box rather
+than the individual tile ranges; they are omitted when a valid bounding box
+cannot be read or mosaic status cannot be determined.
+
+The project stores `acquisition_metadata.csv` with acquisition ID, modality, source
+path, specimen ID, field, value, unit, provenance, source detail, and review status. The separate
+`acquisition_relationships.csv` links two acquisition IDs and records their section
+relationship, evidence, and review status. Use the app's templates for the exact
+columns and allowed values. Specimen IDs refer to the selected sample sheet; they
+do not replace its independent biological-unit IDs.
+
+In addition to the supported standard fields, use `custom:<name>` for contextual
+acquisition metadata (for example, `custom:objective_model`). The name must start
+with an ASCII letter and contain only ASCII letters, digits, underscores, hyphens,
+or dots thereafter. Provide a nonempty string value and, optionally, any unit;
+use the literal `unknown` when the value is unavailable. Custom entries follow the
+same provenance, source-detail, conflict, and review rules as other acquisition
+metadata. They document context only and are never passed to workflow adapters as
+parameters.
+
+Declare specimen and section relationships explicitly, including their evidence and
+whether sections are the same, serial, or unknown. A declaration, its review, and
+acceptance of a spatial transform are separate decisions. Neither filenames nor an
+alignment preview establishes biological identity. Selecting modalities provides
+guidance on available combinations and missing prerequisites; it does not imply that
+every combination is implemented. The only current integration is an exploratory
+translation-only preview of H&E CZI against a fluorescence or HS CZI channel.
+HS–FLIM and other combinations are not available as integration workflows.
+
+Acquisition information is optional for independent modality QC. Valid project
+records used by a run are frozen with hashes in its input bundle; a later project
+edit does not change the frozen record. Review the run's warnings and preflight
+before submission.
+
 ## Modality workflows
 
 | Workspace | Typical starting input | What to expect |

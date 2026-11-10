@@ -4,6 +4,8 @@
 
 The full application is a Streamlit interface over the HPC workspace filesystem. A submission creates a run bundle and sends one guarded controller worker to SLURM. After validating input identity, mappings, and frozen settings, that worker runs a generated Nextflow DSL2 workflow with a process for each declared stage. Nextflow uses its local executor inside that allocation; controller and task resources share the same allocation. Adapters own modality-specific processing and may call external scientific tools. Run state and provenance remain files, not a database or shared service.
 
+The static [architecture PNG](spatial_multimodal_workflow.png) and its editable [SVG source](spatial_multimodal_workflow.svg) summarize implemented versus candidate capability; keep them consistent with the workflow descriptors. They are distinct from the app-generated Introduction diagrams. In the end-to-end schematic, pairing and reviewed alignment are required for integrated biological analysis; the current exploratory translation preview does not establish either.
+
 ```text
 Streamlit UI
   → workflow registry + preflight / explicit mapping
@@ -34,6 +36,23 @@ Interface availability is distinct from execution capability. The app reports wh
 ## Request, identity, and execution
 
 An own-data request uses a project root, one modality folder, `project_samples.csv`, an output root, a workflow ID, and resolved parameters. Shared validation requires `biological_unit_id`, `specimen_id`, `condition`, and `tissue_source`; each row represents one physical specimen/section, and `specimen_id` is unique. A biological unit may have multiple specimens. Workflows that report acquisition groups require an explicit mapping from each exact group key to a reviewed physical specimen, or an explicit `UNMAPPED` technical-QC scope. The worker checks those mappings against the sample sheet; filenames and acquisition groups do not establish biological identity.
+
+Project acquisition information is a separate, optional structured record, not a
+replacement for the canonical sample sheet or workflow mapping review. Native
+metadata discovery reads supported headers only; source provenance and unresolved
+conflicts remain visible, and user declarations do not become native facts.
+Relationships retain their evidence, section relationship and review status.
+They are not accepted transforms. Modality guidance offers only the implemented
+H&E CZI versus fluorescence/HS CZI translation preview; it reports unsupported
+combinations and prerequisites without implying biological pairing.
+
+When valid acquisition records are included, shared preflight validates the captured
+declaration bytes against the captured sample sheet and metadata, then binds their
+hashes. Submission freezes those bytes in the run inputs. Workers require the
+resolved inputs directory to remain inside the run directory and validate the
+frozen records, so a later project edit cannot rewrite the run history. Missing
+optional records do not prevent independent modality QC. Invalid optional records
+are reported, not silently interpreted as scientific evidence.
 
 Preparation runs shared and workflow preflight before enabling submission. Submission snapshots the sample sheet, source/effective settings, and referenced configuration files in a unique run directory. The worker verifies those records before preflight, and each Nextflow stage rechecks frozen configuration integrity before computation. Human-review attempts also revalidate the recorded input inventory. `execute_stage(request, stage_id, upstream, emit)` performs only its declared operation and returns a `WorkflowResult`; its `state` contains JSON metadata and file paths rather than large arrays. CycIF table handoffs use typed Parquet so strings, nulls, categories, and indexes are not lost between processes. `SKIPPED`, `BLOCKED`, `FAILED`, `WARNING`, and `QC_PENDING` remain distinct; an earlier success does not imply later execution.
 

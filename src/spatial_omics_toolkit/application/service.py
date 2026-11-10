@@ -7,12 +7,73 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from spatial_omics_toolkit.application.acquisition import (
+    METADATA_COLUMNS, RELATIONSHIP_COLUMNS, read_acquisition_csv_bytes,
+    validate_acquisition_metadata, validate_acquisition_relationships,
+)
 from spatial_omics_toolkit.application.contracts import PreflightResult, RunRequest
 from spatial_omics_toolkit.application.intake import ALLOWED_ROOT, lexical_path_is_under, path_is_under, read_project_samples_bytes, sha256_file
 from spatial_omics_toolkit.application.runs import append_event, atomic_json, create_run_bundle, update_status, utc_now
 from spatial_omics_toolkit.application.workflows.registry import get_workflow
 from spatial_omics_toolkit.application.scheduler import submit_controller
 from spatial_omics_toolkit.application.settings import PROFILE_KEY, config_file_hashes, default_settings, freeze_profile, profile_metadata
+
+
+def _review_acquisition_declarations(project_root: Path, annotation_csv: Path | None = None, *, annotation_bytes: bytes | None = None) -> tuple[dict[str, str], list[str]]:
+    """Validate optional contextual declarations without blocking independent QC."""
+    columns = {
+        "acquisition_metadata.csv": METADATA_COLUMNS,
+        "acquisition_relationships.csv": RELATIONSHIP_COLUMNS,
+    }
+    contents: dict[str, bytes] = {}
+    warnings: list[str] = []
+    for name in columns:
+        path = project_root / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        try:
+            if path.is_symlink() or not path_is_under(path, project_root) or not path_is_under(path, ALLOWED_ROOT):
+                raise ValueError("path resolves outside the project or workspace")
+            contents[name] = path.read_bytes()
+        except (OSError, ValueError, RuntimeError) as exc:
+            warnings.append(f"Optional {name} excluded from this run: {exc}")
+    valid: dict[str, str] = {}
+    metadata_rows: list[dict[str, str]] = []
+    for name, required_columns in columns.items():
+        if name not in contents:
+            continue
+        if name == "acquisition_relationships.csv" and "acquisition_metadata.csv" not in valid:
+            warnings.append(f"Optional {name} excluded from this run: valid acquisition metadata is required.")
+            continue
+        try:
+            rows, errors = read_acquisition_csv_bytes(contents[name], name, required_columns)
+            if not errors and name == "acquisition_metadata.csv":
+                sample_bytes = annotation_bytes
+                if sample_bytes is None and any(row["specimen_id"] and row["specimen_id"].lower() != "unknown" for row in rows):
+                    sample_path = annotation_csv if annotation_csv is not None else project_root / "project_samples.csv"
+                    sample_bytes = sample_path.read_bytes()
+                errors = validate_acquisition_metadata(project_root, ALLOWED_ROOT, rows, annotation_csv=annotation_csv, annotation_bytes=sample_bytes)
+                if not errors:
+                    metadata_rows = rows
+            elif not errors:
+                errors = validate_acquisition_relationships(project_root, ALLOWED_ROOT, rows, annotation_csv=annotation_csv, metadata_rows=metadata_rows)
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            errors = [str(exc)]
+        if errors:
+            warnings.append(f"Optional {name} excluded from this run: " + "; ".join(errors))
+        else:
+            valid[name] = hashlib.sha256(contents[name]).hexdigest()
+    # Relationship validation reads metadata as well; neither result is trustworthy
+    # if either source changed while the declarations were being reviewed.
+    for name, original in contents.items():
+        try:
+            path = project_root / name
+            if not path_is_under(path, project_root) or not path_is_under(path, ALLOWED_ROOT) or path.read_bytes() != original:
+                raise ValueError("changed during preflight")
+        except (OSError, ValueError, RuntimeError) as exc:
+            warnings.append(f"Optional {name} changed or became unavailable during preflight: {exc}; declarations excluded.")
+            return {}, warnings
+    return valid, warnings
 
 
 def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, modality_dir: Path,
@@ -61,6 +122,7 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
         blockers.extend(sample_blockers)
     except OSError as exc:
         annotation_csv_sha256 = None
+        annotation_bytes = None
         blockers.append(f"Unable to read project_samples.csv for this run: {exc}")
     try:
         initial_config_hashes = config_file_hashes(descriptor, request.parameters, project_root)
@@ -76,6 +138,8 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
     except Exception as exc:
         blockers.append(f"Workflow preflight failed: {exc}")
         modality_preflight = None
+    acquisition_hashes, acquisition_warnings = _review_acquisition_declarations(project_root, annotation_csv, annotation_bytes=annotation_bytes)
+    warnings.extend(acquisition_warnings)
     if annotation_csv_sha256 is not None:
         try:
             if sha256_file(annotation_csv) != annotation_csv_sha256:
@@ -87,6 +151,7 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
         resolved = {**modality_preflight.resolved_parameters, **resolved}
     if annotation_csv_sha256 is not None:
         resolved["annotation_csv_sha256"] = annotation_csv_sha256
+    resolved["_acquisition_csv_sha256"] = acquisition_hashes
     resources = resolved.get("resources", {})
     if not isinstance(resources, dict):
         blockers.append("SLURM task resource settings must be an object")
@@ -124,6 +189,8 @@ def submit_request(request: RunRequest, preflight: PreflightResult) -> str:
     frozen = freeze_profile(descriptor, request.parameters, request.project_root)
     if frozen is None or frozen != preflight.resolved_parameters.get(PROFILE_KEY) or frozen != request.parameters.get(PROFILE_KEY):
         raise ValueError("Settings changed after preflight; run checks again before submission")
+    if request.parameters.get("_acquisition_csv_sha256", {}) != preflight.resolved_parameters.get("_acquisition_csv_sha256", {}):
+        raise ValueError("Acquisition declarations changed after preflight; run checks again before submission")
     create_run_bundle(request, descriptor.model_dump(mode="json"), {**preflight.resolved_parameters, **request.parameters})
     try:
         job_id = submit_controller(request)

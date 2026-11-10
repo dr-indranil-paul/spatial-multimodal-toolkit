@@ -138,11 +138,51 @@ def _safe_stage_name(stage_id: str) -> str:
     return "".join(char if char.isalnum() or char in {"-", "_"} else "_" for char in stage_id) or "workflow"
 
 
+def _validate_run_inputs(run_dir: Path) -> Path:
+    resolved_run = run_dir.resolve()
+    inputs = (resolved_run / "inputs").resolve()
+    if not inputs.is_relative_to(resolved_run) or inputs == resolved_run:
+        raise ValueError("Run inputs resolve outside the run directory.")
+    return inputs
+
+
+def _validate_acquisition_snapshots(run_dir: Path, project: dict[str, Any], expected: Any = None) -> None:
+    """Verify informational acquisition declarations frozen at submission."""
+    snapshots = project.get("acquisition_snapshots", {})
+    if not isinstance(snapshots, dict):
+        raise ValueError("Invalid frozen acquisition snapshot metadata.")
+    if expected is not None:
+        if not isinstance(expected, dict) or {
+            name: info.get("sha256") if isinstance(info, dict) else None
+            for name, info in snapshots.items()
+        } != expected:
+            raise ValueError("Frozen acquisition snapshot metadata does not match the preflight hashes.")
+    inputs = _validate_run_inputs(run_dir)
+    for name, info in snapshots.items():
+        if (
+            name not in {"acquisition_metadata.csv", "acquisition_relationships.csv"}
+            or not isinstance(info, dict)
+            or info.get("snapshot") != f"inputs/{name}"
+            or not isinstance(info.get("sha256"), str)
+        ):
+            raise ValueError("Invalid frozen acquisition snapshot metadata.")
+        snapshot = run_dir / "inputs" / name
+        if not snapshot.resolve().is_relative_to(inputs):
+            raise ValueError(f"Frozen {name} snapshot resolves outside the run inputs.")
+        try:
+            digest = sha256_file(snapshot)
+        except OSError as exc:
+            raise ValueError(f"Frozen {name} snapshot is missing.") from exc
+        if digest != info["sha256"]:
+            raise ValueError(f"Frozen {name} snapshot changed after run submission.")
+
+
 def run_worker(run_dir: Path) -> int:
     run_dir = run_dir.resolve()
     run_file = run_dir / "run.json"
     try:
         metadata: dict[str, Any] = json.loads(run_file.read_text(encoding="utf-8"))
+        _validate_run_inputs(run_dir)
         parameters: dict[str, Any] = dict(metadata["parameters"])
         resolved_path = run_dir / "resolved_parameters.json"
         if resolved_path.is_file():
@@ -173,6 +213,7 @@ def run_worker(run_dir: Path) -> int:
         _, annotation_blockers = read_project_samples(annotation_snapshot)
         if annotation_blockers:
             raise ValueError("Frozen project_samples.csv snapshot is invalid: " + "; ".join(annotation_blockers))
+        _validate_acquisition_snapshots(run_dir, metadata["project"], metadata["parameters"].get("_acquisition_csv_sha256"))
         request = RunRequest(
             workflow_id=metadata["workflow_id"], modality=metadata["modality"],
             project_root=Path(metadata["project"]["root"]), modality_dir=Path(metadata["input"]["modality_dir"]),

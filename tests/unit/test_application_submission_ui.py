@@ -16,7 +16,7 @@ from spatial_omics_toolkit.application.contracts import PreflightResult, RunRequ
 APP = Path(__file__).resolve().parents[2] / "apps" / "streamlit" / "app.py"
 
 
-@pytest.mark.parametrize("final_outcome", ["ready", "blocked", "changed_metadata"])
+@pytest.mark.parametrize("final_outcome", ["ready", "blocked", "changed_metadata", "changed_acquisition"])
 def test_start_requires_confirmation_and_fresh_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, final_outcome: str,
 ) -> None:
@@ -45,9 +45,13 @@ def test_start_requires_confirmation_and_fresh_preflight(
         checked.append(request)
         ready = len(checked) < 3 or final_outcome != "blocked"
         receipt = "changed" if len(checked) >= 3 and final_outcome == "changed_metadata" else "reviewed"
+        acquisition_receipt = "changed" if len(checked) >= 3 and final_outcome == "changed_acquisition" else "reviewed"
         return request, PreflightResult(
             ready=ready, blockers=[] if ready else ["Input changed during final validation"],
-            resolved_parameters={**request.parameters, "acquisition_groups": [], "annotation_csv_sha256": receipt},
+            resolved_parameters={
+                **request.parameters, "acquisition_groups": [], "annotation_csv_sha256": receipt,
+                "_acquisition_csv_sha256": {"acquisition_metadata.csv": acquisition_receipt},
+            },
         )
 
     def submit(request: RunRequest, preflight: PreflightResult) -> str:
