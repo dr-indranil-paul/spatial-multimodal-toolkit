@@ -49,6 +49,7 @@ pathology = [
 flim = [
     "phasorpy>=0.12.0",
     "threadpoolctl>=3.1.0",
+    "sdtfile==2024.5.24",
 ]
 app = [
     "streamlit==1.54.0",
@@ -56,8 +57,12 @@ app = [
 previews = [
     "pymupdf>=1.23.0",
 ]
+valis = [
+    "valis-wsi",
+    "simpleitk",
+]
 imaging = [
-    "opencv-python>=4.8.0",
+    "opencv-python-headless>=4.8.0",
     "tifffile>=2023.7.0",
     "scikit-image>=0.21.0",
     "aicspylibczi>=3.1.0",
@@ -70,9 +75,9 @@ spatial-omics = "spatial_omics_toolkit.cli.main:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+spatial_omics_toolkit = ["external_scripts/*.py", "external_scripts/PROVENANCE.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"
-
-[tool.setuptools.package-data]
-spatial_omics_toolkit = ["external_scripts/*.py", "external_scripts/PROVENANCE.md"]

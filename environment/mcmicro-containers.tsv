@@ -1,0 +1,6 @@
+# module	image
+illumination	labsyspharm/basic-illumination:1.4.0
+registration	labsyspharm/ashlar:1.19.0
+dearray	labsyspharm/unetcoreograph:2.4.6
+quantification	labsyspharm/quantification:1.6.0
+roadie	ghcr.io/labsyspharm/mcmicro:roadie-2023-10-25
