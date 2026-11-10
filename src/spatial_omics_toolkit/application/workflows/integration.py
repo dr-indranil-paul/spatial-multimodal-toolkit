@@ -6,7 +6,8 @@ import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
-from spatial_omics_toolkit.application.intake import ALLOWED_ROOT, lexical_path_is_under, path_is_under
+from spatial_omics_toolkit.application.config import describe_workspace_roots
+from spatial_omics_toolkit.application.intake import lexical_path_is_under_workspace, path_is_under_workspace
 
 import numpy as np
 from PIL import Image
@@ -174,8 +175,8 @@ def preflight(request: RunRequest) -> PreflightResult:
         if path is None:
             blockers.append(f"{label} must be explicitly supplied.")
             continue
-        if not lexical_path_is_under(path, ALLOWED_ROOT) or not path_is_under(path, ALLOWED_ROOT):
-            blockers.append(f"{label} must resolve under {ALLOWED_ROOT}: {path}")
+        if not lexical_path_is_under_workspace(path) or not path_is_under_workspace(path):
+            blockers.append(f"{label} must resolve under {describe_workspace_roots()}: {path}")
         if not path.is_file():
             blockers.append(f"{label} does not exist: {path}")
         elif path.suffix.lower() != ".czi":

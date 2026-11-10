@@ -15,7 +15,7 @@ except ModuleNotFoundError:  # Python 3.10
     import tomli as tomllib
 
 from spatial_omics_toolkit.application.contracts import ParameterField, RunRequest, WorkflowDescriptor
-from spatial_omics_toolkit.application.intake import ALLOWED_ROOT, path_is_under
+from spatial_omics_toolkit.application.intake import path_is_under_workspace
 
 PROFILE_KEY = "_settings_profile"
 _MAX_BYTES = 1024 * 1024
@@ -289,7 +289,7 @@ def freeze_profile(descriptor: WorkflowDescriptor, parameters: dict[str, Any], p
 
 def settings_directory(project_root: Path) -> Path:
     root = project_root.expanduser().resolve(strict=True)
-    if not root.is_dir() or not path_is_under(root, ALLOWED_ROOT):
+    if not root.is_dir() or not path_is_under_workspace(root):
         raise ValueError("Select a project directory under the permitted data root")
     directory = root / ".spatial_toolkit" / "settings"
     for path in (root / ".spatial_toolkit", directory):

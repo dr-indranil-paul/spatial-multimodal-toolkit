@@ -13,7 +13,13 @@ The same full interface is available on Streamlit Community Cloud and on HPC, re
 
 The full interface does not make the Cloud server an HPC cluster. Workflow submission requires `sbatch` on the app server and an authorized, functioning SLURM backend; the app reports when `sbatch` is missing and submission errors are surfaced. Inputs and outputs must be accessible to that server and satisfy the approved-workspace restrictions. Lab HPC paths are not automatically accessible from Community Cloud, and Cloud resource and storage limits still apply. For analysis, use an authorized HPC deployment with the required data, tools, and storage.
 
+On HPC, each lab configures its own paths, interpreter, job environment script, and SLURM account through `SPATIAL_TOOLKIT_*` environment variables. The defaults are the Emili lab's paths and are not portable. See [docs/COLLABORATOR_SETUP.md](docs/COLLABORATOR_SETUP.md).
+
 Deploy `apps/streamlit/app.py` from the private GitHub repository and keep the Community Cloud app private. Invite the collaborator as a Cloud viewer; give separate GitHub repository access only if they need to use or inspect the code. An optional `datasets_url` under `[toolkit]` in Cloud **App settings → Secrets** adds an external Google Drive link on Home; the app does not mount Drive or automatically copy its files. Drive permissions remain separate: check that the folder is accessible only to intended users. See [app sharing and privacy](https://docs.streamlit.io/deploy/streamlit-community-cloud/share-your-app). Do not place identifiable or otherwise restricted study data in a personal Google account unless institutional policy approves it.
+
+## Using this toolkit from another lab
+
+Labs outside the repository owner's group clone the private repository into their own workspace, build their own environment, and keep their own data there. Start with [docs/COLLABORATOR_SETUP.md](docs/COLLABORATOR_SETUP.md) for access, branches, environment setup, and launching the app on a loopback-only SLURM allocation. Contribution rules, branch convention, and test expectations are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Start here
 

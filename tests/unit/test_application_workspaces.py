@@ -12,6 +12,13 @@ from streamlit.testing.v1 import AppTest
 APP = Path(__file__).resolve().parents[2] / "apps" / "streamlit" / "app.py"
 
 
+@pytest.fixture(autouse=True)
+def _approved_test_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Each test's temporary folder is its own approved workspace root, so the result
+    # no longer depends on the TMPDIR of the machine that runs the suite.
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
+
+
 def _app(tmp_path: Path, page: str = "Home") -> AppTest:
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
@@ -444,7 +451,7 @@ def test_applied_profile_updates_visible_and_submitted_parameters_and_resets(
 ) -> None:
     from spatial_omics_toolkit.application import settings
 
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     app = _app(tmp_path, "H&E")
     app.session_state["workspace_section_H&E"] = "Setup"
     settings.save_user_settings(

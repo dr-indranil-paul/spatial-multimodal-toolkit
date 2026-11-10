@@ -7,9 +7,10 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from spatial_omics_toolkit.application.config import describe_workspace_roots, workspace_roots
+
 
 PROJECT_SAMPLE_COLUMNS = ("biological_unit_id", "specimen_id", "condition", "tissue_source")
-ALLOWED_ROOT = Path("/home/groups/EmiliLab/pauli").resolve()
 
 
 def path_is_under(path: Path, parent: Path) -> bool:
@@ -28,11 +29,19 @@ def lexical_path_is_under(path: Path, parent: Path) -> bool:
         return False
 
 
+def path_is_under_workspace(path: Path) -> bool:
+    return any(path_is_under(path, root) for root in workspace_roots())
+
+
+def lexical_path_is_under_workspace(path: Path) -> bool:
+    return any(lexical_path_is_under(path, root) for root in workspace_roots())
+
+
 def validate_path_scope(path: Path, label: str) -> list[str]:
     if not path.exists():
         return [f"{label} does not exist: {path}"]
-    if not lexical_path_is_under(path, ALLOWED_ROOT):
-        return [f"{label} must be selected from under {ALLOWED_ROOT}: {path.absolute()}"]
+    if not lexical_path_is_under_workspace(path):
+        return [f"{label} must be selected from under one of the {describe_workspace_roots()}: {path.absolute()}"]
     return []
 
 

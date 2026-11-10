@@ -23,10 +23,7 @@ from spatial_omics_toolkit.application.contracts import (
 )
 
 WORKFLOW_ID = "hs.native_spectral_qc"
-_CANONICAL_SCRIPTS = Path(
-    "/home/groups/EmiliLab/pauli/02_projects_current/02_spatial_proteomics/03_analysis/"
-    "01_exploratory_analysis/02_scripts"
-)
+_CANONICAL_SCRIPTS = Path(__file__).resolve().parents[2] / "external_scripts"
 
 
 def _source_dir() -> Path:
@@ -64,7 +61,7 @@ def _reader() -> Any:
     source = directory / "clinical_roi_hs_flim.py"
     missing = [str(path) for path in (source, directory / "clinical_roi_hyperspectral.py") if not path.is_file()]
     if missing:
-        raise FileNotFoundError("Canonical native HS source is unavailable: " + ", ".join(missing))
+        raise FileNotFoundError("Canonical native HS source is unavailable: " + ", ".join(missing) + " (override the directory with SPATIAL_TOOLKIT_HS_SOURCE_DIR)")
     if str(directory) not in sys.path:
         sys.path.insert(0, str(directory))
     return _load_module("clinical_roi_hs_flim", source)
@@ -176,7 +173,11 @@ def preflight(request: RunRequest) -> PreflightResult:
     required_sources = ("clinical_roi_hs_flim.py", "clinical_roi_hyperspectral.py")
     missing = [name for name in required_sources if not (source_directory / name).is_file()]
     if missing:
-        blockers.append("Canonical native HS source is unavailable: " + ", ".join(str(source_directory / name) for name in missing))
+        blockers.append(
+            "Canonical native HS source is unavailable: "
+            + ", ".join(str(source_directory / name) for name in missing)
+            + " (override the directory with SPATIAL_TOOLKIT_HS_SOURCE_DIR)"
+        )
     memory_limit = request.parameters.get("max_working_bytes", 4 * 1024**3)
     if not isinstance(memory_limit, int) or isinstance(memory_limit, bool) or memory_limit < 1:
         blockers.append("max_working_bytes must be a positive integer.")

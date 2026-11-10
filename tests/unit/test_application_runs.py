@@ -128,13 +128,13 @@ def test_acquisition_changed_after_preflight_rejects_bundle(tmp_path: Path) -> N
 
 def test_preflight_absent_declarations_are_optional(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(tmp_path)
-    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     assert service._review_acquisition_declarations(request.project_root) == ({}, [])
 
 
 def test_preflight_reviews_and_excludes_invalid_optional_declarations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(tmp_path)
-    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     metadata = request.project_root / "acquisition_metadata.csv"
     metadata.write_text(
         "acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
@@ -150,7 +150,7 @@ def test_preflight_reviews_and_excludes_invalid_optional_declarations(tmp_path: 
 
 def test_preflight_excludes_declarations_changed_during_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(tmp_path)
-    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     metadata = request.project_root / "acquisition_metadata.csv"
     metadata.write_text(
         "acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
@@ -171,7 +171,7 @@ def test_preflight_excludes_declarations_changed_during_validation(tmp_path: Pat
 
 def test_preflight_validates_captured_metadata_and_samples_despite_aba(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(tmp_path)
-    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     metadata = request.project_root / "acquisition_metadata.csv"
     original = (
         b"acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"
@@ -200,7 +200,7 @@ def test_preflight_validates_captured_metadata_and_samples_despite_aba(tmp_path:
 
 def test_preflight_relationships_use_captured_metadata_despite_aba(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _request(tmp_path)
-    monkeypatch.setattr(service, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     metadata = request.project_root / "acquisition_metadata.csv"
     original = (
         b"acquisition_id,modality,source_path,specimen_id,field,value,unit,provenance,source_detail,reviewed\n"

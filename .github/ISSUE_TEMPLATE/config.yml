@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Setup and access questions
+    url: https://github.com/dr-indranil-paul/spatial-multimodal-toolkit/blob/main/docs/COLLABORATOR_SETUP.md
+    about: Read the collaborator setup guide before opening an issue about access or environment.

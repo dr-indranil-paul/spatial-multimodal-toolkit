@@ -34,7 +34,7 @@ def test_artifact_inventory_deduplicates_paths_and_retains_latest_stage_state(tm
 
 
 def test_run_bundle_selection_requires_modality_workflow_and_output_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(results, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     output = tmp_path / "outputs"
     run_dir = output / "CycIF" / "runs" / "saved"
     run_dir.mkdir(parents=True)
@@ -52,7 +52,7 @@ def test_run_bundle_selection_requires_modality_workflow_and_output_scope(tmp_pa
 def test_example_and_own_run_histories_stay_separate_in_shared_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(results, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     for scope in ("own", "example"):
         run_dir = tmp_path / "H&E" / "runs" / scope
         run_dir.mkdir(parents=True)

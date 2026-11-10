@@ -6,6 +6,7 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
+from spatial_omics_toolkit.application.config import load_site_config, package_source_dir
 from spatial_omics_toolkit.application.contracts import RunRequest
 from spatial_omics_toolkit.application.runs import append_event, record_slurm_job, update_status, update_status_if
 
@@ -36,12 +37,15 @@ def submit_controller(request: RunRequest) -> str:
     script = run_dir / f"worker-attempt-{attempt}.sh"
     log_dir = run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    python_launcher = "/home/groups/EmiliLab/pauli/00_environments/bin/spatial-python"
+    site = load_site_config()
+    python_launcher = str(site.python)
     quoted_run_dir = shlex.quote(str(run_dir))
+    pythonpath = ":".join(shlex.quote(str(path)) for path in (*site.extra_pythonpath, package_source_dir()))
+    env_line = f"source {shlex.quote(str(site.env_script))} || exit $?\n" if site.env_script is not None else ""
     script.write_text(
         "#!/bin/bash\nset -uo pipefail\n"
-        "export PYTHONPATH=/home/groups/EmiliLab/pauli/00_environments/python-libs/spatial-toolkit-20261030:/home/groups/EmiliLab/pauli/00_environments/python-packages/sdtfile-2024.5.24:/home/groups/EmiliLab/pauli/02_projects_current/02_spatial_toolkit/src${PYTHONPATH:+:$PYTHONPATH}\n"
-        "source /home/groups/EmiliLab/pauli/00_environments/bin/spatial_env.sh || exit $?\n"
+        f"export PYTHONPATH={pythonpath}${{PYTHONPATH:+:$PYTHONPATH}}\n"
+        f"{env_line}"
         f"{shlex.quote(python_launcher)} -m spatial_omics_toolkit.application.worker --run-dir {quoted_run_dir}\n"
         "worker_rc=$?\n"
         f"{shlex.quote(python_launcher)} -m spatial_omics_toolkit.application.controller --run-dir {quoted_run_dir} --exit-code \"$worker_rc\"\n"
@@ -63,6 +67,8 @@ def submit_controller(request: RunRequest) -> str:
             f"--cpus-per-task={cpus}",
             f"--time={time_limits[time_limit]}",
             f"--mem={memory_gb}G",
+            *([f"--account={site.slurm_account}"] if site.slurm_account else []),
+            *([f"--partition={site.slurm_partition}"] if site.slurm_partition else []),
             f"--chdir={run_dir}",
             f"--output={log_dir}/worker-attempt-{attempt}-%j.out",
             f"--error={log_dir}/worker-attempt-{attempt}-%j.err",

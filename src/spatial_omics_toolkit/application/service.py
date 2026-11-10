@@ -12,7 +12,8 @@ from spatial_omics_toolkit.application.acquisition import (
     validate_acquisition_metadata, validate_acquisition_relationships,
 )
 from spatial_omics_toolkit.application.contracts import PreflightResult, RunRequest
-from spatial_omics_toolkit.application.intake import ALLOWED_ROOT, lexical_path_is_under, path_is_under, read_project_samples_bytes, sha256_file
+from spatial_omics_toolkit.application.config import containing_workspace_root, describe_workspace_roots
+from spatial_omics_toolkit.application.intake import lexical_path_is_under, lexical_path_is_under_workspace, path_is_under, path_is_under_workspace, read_project_samples_bytes, sha256_file
 from spatial_omics_toolkit.application.runs import append_event, atomic_json, create_run_bundle, update_status, utc_now
 from spatial_omics_toolkit.application.workflows.registry import get_workflow
 from spatial_omics_toolkit.application.scheduler import submit_controller
@@ -32,7 +33,7 @@ def _review_acquisition_declarations(project_root: Path, annotation_csv: Path | 
         if not path.exists() and not path.is_symlink():
             continue
         try:
-            if path.is_symlink() or not path_is_under(path, project_root) or not path_is_under(path, ALLOWED_ROOT):
+            if path.is_symlink() or not path_is_under(path, project_root) or not path_is_under_workspace(path):
                 raise ValueError("path resolves outside the project or workspace")
             contents[name] = path.read_bytes()
         except (OSError, ValueError, RuntimeError) as exc:
@@ -52,11 +53,11 @@ def _review_acquisition_declarations(project_root: Path, annotation_csv: Path | 
                 if sample_bytes is None and any(row["specimen_id"] and row["specimen_id"].lower() != "unknown" for row in rows):
                     sample_path = annotation_csv if annotation_csv is not None else project_root / "project_samples.csv"
                     sample_bytes = sample_path.read_bytes()
-                errors = validate_acquisition_metadata(project_root, ALLOWED_ROOT, rows, annotation_csv=annotation_csv, annotation_bytes=sample_bytes)
+                errors = validate_acquisition_metadata(project_root, containing_workspace_root(project_root), rows, annotation_csv=annotation_csv, annotation_bytes=sample_bytes)
                 if not errors:
                     metadata_rows = rows
             elif not errors:
-                errors = validate_acquisition_relationships(project_root, ALLOWED_ROOT, rows, annotation_csv=annotation_csv, metadata_rows=metadata_rows)
+                errors = validate_acquisition_relationships(project_root, containing_workspace_root(project_root), rows, annotation_csv=annotation_csv, metadata_rows=metadata_rows)
         except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
             errors = [str(exc)]
         if errors:
@@ -68,7 +69,7 @@ def _review_acquisition_declarations(project_root: Path, annotation_csv: Path | 
     for name, original in contents.items():
         try:
             path = project_root / name
-            if not path_is_under(path, project_root) or not path_is_under(path, ALLOWED_ROOT) or path.read_bytes() != original:
+            if not path_is_under(path, project_root) or not path_is_under_workspace(path) or path.read_bytes() != original:
                 raise ValueError("changed during preflight")
         except (OSError, ValueError, RuntimeError) as exc:
             warnings.append(f"Optional {name} changed or became unavailable during preflight: {exc}; declarations excluded.")
@@ -91,8 +92,8 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
     for label, path in (("Project root", project_root), ("Modality folder", modality_dir), ("project_samples.csv", annotation_csv)):
         if not path.exists():
             blockers.append(f"{label} does not exist: {path}")
-        elif not lexical_path_is_under(path, ALLOWED_ROOT):
-            blockers.append(f"{label} must be selected from under {ALLOWED_ROOT}")
+        elif not lexical_path_is_under_workspace(path):
+            blockers.append(f"{label} must be selected from under {describe_workspace_roots()}")
     if project_root.exists() and not project_root.is_dir():
         blockers.append("Project root must be a directory")
     if modality_dir.exists() and not modality_dir.is_dir():
@@ -106,11 +107,11 @@ def prepare_request(workflow_id: str, project_root: Path, annotation_csv: Path, 
     if output_root.exists():
         if not output_root.is_dir():
             blockers.append("Output root must be a directory")
-        elif not path_is_under(output_root, ALLOWED_ROOT):
-            blockers.append(f"Output root must resolve under {ALLOWED_ROOT}")
+        elif not path_is_under_workspace(output_root):
+            blockers.append(f"Output root must resolve under {describe_workspace_roots()}")
     else:
-        if not lexical_path_is_under(output_root, ALLOWED_ROOT) or not path_is_under(output_root, ALLOWED_ROOT):
-            blockers.append(f"Output root must resolve under {ALLOWED_ROOT}")
+        if not lexical_path_is_under_workspace(output_root) or not path_is_under_workspace(output_root):
+            blockers.append(f"Output root must resolve under {describe_workspace_roots()}")
     if modality_dir.exists() and path_is_under(output_root, modality_dir):
         blockers.append("Output root cannot be inside the raw modality folder")
     if run_dir.exists():

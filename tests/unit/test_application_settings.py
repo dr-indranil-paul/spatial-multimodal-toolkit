@@ -66,7 +66,7 @@ def test_syntax_and_workflow_mismatch_are_actionable() -> None:
 
 
 def test_profile_apply_reset_and_freeze(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
     text = 'workflow_id = "test.workflow"\n[parameters]\n"analysis.threshold" = 0.8\n"input_path" = "/data/source"\n'
@@ -86,7 +86,7 @@ def test_profile_apply_reset_and_freeze(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def test_files_cannot_overwrite_defaults_or_source_links(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
     source = project / "source.toml"
@@ -183,7 +183,7 @@ def test_sparse_profile_starts_from_defaults() -> None:
 def test_profile_editor_switches_project_without_cross_project_overwrite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from spatial_omics_toolkit.application.ui import settings as settings_ui
 
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     project_a, project_b = tmp_path / "a", tmp_path / "b"
     project_a.mkdir()
     project_b.mkdir()
@@ -212,7 +212,7 @@ def test_profile_editor_switches_project_without_cross_project_overwrite(tmp_pat
 def test_profile_editor_draft_survives_widget_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from spatial_omics_toolkit.application.ui import settings as settings_ui
 
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
     original = 'workflow_id = "test.workflow"\n[parameters]\n"analysis.threshold" = 0.2\n'
@@ -244,7 +244,7 @@ def test_profile_editor_draft_survives_widget_cleanup(tmp_path: Path, monkeypatc
 def test_new_profile_filename_and_draft_survive_navigation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from spatial_omics_toolkit.application.ui import settings as settings_ui
 
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
     ui = MagicMock()
@@ -275,7 +275,7 @@ def test_new_profile_filename_and_draft_survive_navigation(tmp_path: Path, monke
 def test_selected_profile_survives_navigation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from spatial_omics_toolkit.application.ui import settings as settings_ui
 
-    monkeypatch.setattr(settings, "ALLOWED_ROOT", tmp_path)
+    monkeypatch.setenv("SPATIAL_TOOLKIT_WORKSPACE_ROOTS", str(tmp_path))
     project = tmp_path / "project"
     project.mkdir()
     source = 'workflow_id = "test.workflow"\n[parameters]\n"analysis.threshold" = 0.8\n'

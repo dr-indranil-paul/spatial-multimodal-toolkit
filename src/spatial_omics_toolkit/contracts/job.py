@@ -64,5 +64,5 @@ class JobSpec(BaseModel):
     )
     output_dir: str = Field(
         ...,
-        description="Output directory path beneath /home/groups/EmiliLab/pauli/ or /home/groups/EmiliLab/pauli/ (platform-dependent)",
+        description="Output directory path beneath an approved workspace root (SPATIAL_TOOLKIT_WORKSPACE_ROOTS)",
     )

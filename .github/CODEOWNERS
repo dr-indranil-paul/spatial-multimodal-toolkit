@@ -1,0 +1,8 @@
+# Takes effect only when branch protection on main ticks "Require review from Code Owners". See CONTRIBUTING.md.
+*                                                          @dr-indranil-paul
+
+# Site configuration, vendored scripts and environment pins affect every lab.
+/src/spatial_omics_toolkit/application/config.py           @dr-indranil-paul
+/src/spatial_omics_toolkit/external_scripts/               @dr-indranil-paul
+/environment/                                              @dr-indranil-paul
+/.github/                                                  @dr-indranil-paul

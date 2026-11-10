@@ -1,0 +1,30 @@
+# Unit tests on hosted runners.
+# Note: this repository is private, so GitHub Actions minutes are limited.
+# This workflow was written but NOT run from the HPC; first runs on GitHub are the check.
+# It does not replace the compute-node test run described in CONTRIBUTING.md.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System packages
+        run: sudo apt-get update && xargs -a packages.txt sudo apt-get install -y
+      - name: Install
+        run: |
+          pip install -r environment/requirements.lock.txt
+          pip install -e .
+      - name: Test
+        env:
+          PYTHONPATH: src
+        run: pytest tests/unit -q
